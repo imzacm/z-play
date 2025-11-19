@@ -1,0 +1,20 @@
+[package]
+name = "z-play-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rand = "0.9"
+rayon = "1.11"
+jwalk = "0.8"
+
+ffmpeg-next = "8.0"
+
+parking_lot = "0.12"
+
+eframe = "0.31"
+egui_extras = { version = "0.31", features = ["file", "http", "image", "gif"] }
+
+# egui-video = { path = "../egui-video" }
+egui-video = { git = "https://github.com/imzacm/egui-video.git", rev = "f1197f409f254e7c29dc6b9d4c5296f65173d91b" }
+egui_player = "0.1.3"

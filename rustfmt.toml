@@ -1,0 +1,16 @@
+# See https://rust-lang.github.io/rustfmt for options
+
+style_edition = "2024"
+use_small_heuristics = "Max"
+imports_granularity = "Module"
+group_imports = "StdExternalCrate"
+max_width = 100
+chain_width = 80
+single_line_if_else_max_width = 80
+struct_lit_width = 70
+# This used to be 90, but changed due to this rustfmt bug https://github.com/rust-lang/rustfmt/issues/5404
+struct_variant_width = 80
+comment_width = 100
+use_field_init_shorthand = true
+wrap_comments = true
+merge_derives = false
