@@ -1,23 +1,63 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use parking_lot::Mutex;
 
 use crate::media_type::{MediaFile, MediaType};
 use crate::random_files::RandomFiles;
 
-pub struct App {
-    files: Arc<Mutex<RandomFiles>>,
-    audio_device: egui_video::AudioDevice,
-    video_player: Option<egui_video::Player>,
-    audio_player: Option<egui_player::player::Player>,
-    error_message: Option<String>,
-    current: Option<MediaFile>,
-    next_at: Option<Instant>,
+enum FileState {
+    NotStarted(RandomFiles),
+    Started(flume::Receiver<Result<MediaFile, String>>),
+    Ended,
+}
 
-    next_file: Option<Arc<Mutex<Option<Result<MediaFile, String>>>>>,
+impl FileState {
+    fn file_rx(&self) -> Option<&flume::Receiver<Result<MediaFile, String>>> {
+        match self {
+            FileState::NotStarted(_) => None,
+            FileState::Started(file_rx) => Some(file_rx),
+            FileState::Ended => None,
+        }
+    }
+}
+
+enum PlayerState {
+    None,
+    Error(String),
+    Video { file: MediaFile, player: egui_video::Player },
+    Audio { file: MediaFile, player: egui_player::player::Player },
+    Image { file: MediaFile, next_at: Instant },
+}
+
+impl PlayerState {
+    fn file(&self) -> Option<&MediaFile> {
+        match self {
+            Self::None | Self::Error(_) => None,
+            Self::Video { file, .. } | Self::Audio { file, .. } | Self::Image { file, .. } => {
+                Some(file)
+            }
+        }
+    }
+
+    fn is_ended(&self) -> bool {
+        match self {
+            Self::None | Self::Error(_) => true,
+            Self::Video { player, .. } => {
+                player.player_state.get() == egui_video::PlayerState::EndOfFile
+            }
+            Self::Audio { player, .. } => {
+                player.player_state == egui_player::player::PlayerState::Ended
+            }
+            Self::Image { next_at, .. } => *next_at <= Instant::now(),
+        }
+    }
+}
+
+pub struct App {
+    audio_device: egui_video::AudioDevice,
+    player_state: PlayerState,
+    file_state: FileState,
 }
 
 impl App {
@@ -27,77 +67,34 @@ impl App {
     {
         let audio_device = egui_video::AudioDevice::new().unwrap();
         Self {
-            files: Arc::new(Mutex::new(RandomFiles::new(files))),
             audio_device,
-            video_player: None,
-            audio_player: None,
-            error_message: None,
-            current: None,
-            next_at: None,
-
-            next_file: None,
+            player_state: PlayerState::None,
+            file_state: FileState::NotStarted(RandomFiles::new(files)),
         }
     }
 
-    fn start_next_file(&mut self, ctx: &egui::Context) {
-        let ctx = ctx.clone();
-        let files = self.files.clone();
-        let arc_mutex = Arc::new(Mutex::new(None));
-        self.next_file = Some(arc_mutex.clone());
-
-        rayon::spawn(move || {
-            loop {
-                let Some(path) = files.lock().next() else {
-                    *arc_mutex.lock() = Some(Err("No files found".to_string()));
-                    break;
-                };
-
-                match MediaType::detect(&path) {
-                    Ok(MediaType::Unknown) => {
-                        eprintln!("Unknown media type for {path:?}");
-                    }
-                    Ok(media_type) => {
-                        *arc_mutex.lock() = Some(Ok(MediaFile { path, media_type }));
-                        break;
-                    }
-                    Err(error) => eprintln!("Error detecting media type: {error}"),
-                }
-            }
-
-            debug_assert!(arc_mutex.lock().is_some());
-            ctx.request_repaint();
-        });
-    }
-
     fn next_file(&mut self, ctx: &egui::Context) {
-        let Some(arc_mutex) = self.next_file.take() else {
-            self.start_next_file(ctx);
-            return;
+        self.file_state = match std::mem::replace(&mut self.file_state, FileState::Ended) {
+            FileState::NotStarted(files) => {
+                let (file_tx, file_rx) = flume::bounded(2);
+                let ctx = ctx.clone();
+                std::thread::spawn(move || file_feeder(ctx, file_tx, files));
+                FileState::Started(file_rx)
+            }
+            FileState::Started(file_rx) => FileState::Started(file_rx),
+            FileState::Ended => return,
         };
 
-        let mutex = match Arc::try_unwrap(arc_mutex) {
-            Ok(mutex) => mutex,
-            Err(arc_mutex) => {
-                self.next_file = Some(arc_mutex);
+        let Some(file_rx) = self.file_state.file_rx() else { return };
+
+        let file = match file_rx.try_recv() {
+            Ok(Ok(file)) => file,
+            Ok(Err(error)) => {
+                self.player_state = PlayerState::Error(error);
                 return;
             }
+            Err(_) => return,
         };
-
-        // The task always sets to Some, so unwrap is safe here.
-        let result = mutex.into_inner().unwrap();
-        let file = match result {
-            Ok(file) => file,
-            Err(error) => {
-                self.error_message = Some(error);
-                return;
-            }
-        };
-
-        self.error_message = None;
-        self.video_player = None;
-        self.audio_player = None;
-        self.current = None;
-        self.next_at = None;
 
         let path = &file.path;
         match file.media_type {
@@ -107,7 +104,6 @@ impl App {
                     Ok(player) => player,
                     Err(error) => {
                         eprintln!("Error creating player: {error}");
-                        self.start_next_file(ctx);
                         return;
                     }
                 };
@@ -115,27 +111,25 @@ impl App {
                     Ok(player) => player,
                     Err(error) => {
                         eprintln!("Error creating player with audio: {error}");
-                        self.start_next_file(ctx);
                         return;
                     }
                 };
                 player.options.looping = false;
                 // TODO: Maintain aspect ratio.
                 player.start();
-                self.video_player = Some(player);
+                self.player_state = PlayerState::Video { file, player };
             }
             MediaType::Image => {
-                self.next_at = Some(Instant::now() + Duration::from_secs(10));
+                let next_at = Instant::now() + Duration::from_secs(10);
+                self.player_state = PlayerState::Image { file, next_at };
             }
             MediaType::Audio => {
                 let path = path.to_string_lossy();
                 let player = egui_player::player::Player::from_path(path.as_ref());
-                self.audio_player = Some(player);
+                self.player_state = PlayerState::Audio { file, player };
             }
             MediaType::Unknown => unreachable!(),
         }
-
-        self.current = Some(file);
     }
 }
 
@@ -144,7 +138,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Z-Play");
             ui.horizontal(|ui| {
-                if let Some(error) = &self.error_message {
+                if let PlayerState::Error(error) = &self.player_state {
                     ui.label(format!("Error: {error}"));
                 }
             });
@@ -152,33 +146,57 @@ impl eframe::App for App {
             let next_button = ui.button("Next");
 
             // TODO: Seeking starts next file.
-            if next_button.clicked()
-                // If already loading, poll it.
-                || self.next_file.is_some()
-                || self.next_at.is_some_and(|i| i <= Instant::now())
-                || self.video_player.as_ref().is_some_and(|p| p.player_state.get() == egui_video::PlayerState::EndOfFile)
-                || self.audio_player.as_ref().is_some_and(|p| p.player_state == egui_player::player::PlayerState::Ended)
-            {
+            if next_button.clicked() || self.player_state.is_ended() {
                 self.next_file(ctx);
             }
 
-            if let Some(file) = &self.current {
+            if let Some(file) = self.player_state.file() {
                 ui.label(format!("Playing: {}", file.path.display()));
+            }
 
-                if let Some(player) = &mut self.video_player {
+            match &mut self.player_state {
+                PlayerState::None | PlayerState::Error(_) => (),
+                PlayerState::Video { player, .. } => {
                     player.size = ui.available_size();
                     player.ui(ui, player.size);
                 }
-
-                if let Some(player) = &mut self.audio_player {
+                PlayerState::Audio { player, .. } => {
                     player.ui(ui);
                 }
-
-                if let MediaType::Image = file.media_type {
+                PlayerState::Image { file, .. } => {
                     let uri = format!("file://{}", file.path.display());
                     ui.image(uri);
                 }
             }
         });
+    }
+}
+
+fn file_feeder(
+    ctx: egui::Context,
+    file_tx: flume::Sender<Result<MediaFile, String>>,
+    mut files: RandomFiles,
+) {
+    loop {
+        if file_tx.is_disconnected() {
+            break;
+        }
+
+        let Some(path) = files.next() else {
+            _ = file_tx.send(Err("No files found".to_string()));
+            ctx.request_repaint();
+            break;
+        };
+
+        match MediaType::detect(&path) {
+            Ok(MediaType::Unknown) => {
+                eprintln!("Unknown media type for {path:?}");
+            }
+            Ok(media_type) => {
+                _ = file_tx.send(Ok(MediaFile { path, media_type }));
+                ctx.request_repaint();
+            }
+            Err(error) => eprintln!("Error detecting media type: {error}"),
+        }
     }
 }

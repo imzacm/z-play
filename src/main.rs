@@ -1,3 +1,5 @@
+#![deny(unused_imports, clippy::all)]
+
 use std::path::PathBuf;
 
 use eframe::egui;
