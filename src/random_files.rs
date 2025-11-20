@@ -5,8 +5,14 @@ use rand::seq::SliceRandom;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
 #[derive(Debug, Clone)]
+struct Root {
+    path: PathBuf,
+    usage_count: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct RandomFiles {
-    roots: Vec<PathBuf>,
+    roots: Vec<Root>,
 }
 
 impl RandomFiles {
@@ -14,7 +20,10 @@ impl RandomFiles {
     where
         I: IntoIterator<Item: Into<PathBuf>>,
     {
-        let roots: Vec<_> = root_dirs.into_iter().map(Into::into).collect();
+        let roots: Vec<_> = root_dirs
+            .into_iter()
+            .map(|path| Root { path: path.into(), usage_count: 0 })
+            .collect();
         Self { roots }
     }
 }
@@ -24,17 +33,30 @@ impl Iterator for RandomFiles {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.roots.shuffle(&mut rand::rng());
-        let results = self.roots.par_iter().map(|p| scan_root(p)).collect::<Vec<_>>();
 
-        let total_files = results.iter().map(|r| r.count).sum();
+        let min_usage_count = self.roots.iter().map(|r| r.usage_count).min().unwrap_or(0);
+        let results = self
+            .roots
+            .par_iter()
+            .filter_map(|root| {
+                if root.usage_count != min_usage_count {
+                    return None;
+                }
+                Some((&root.path, scan_root(&root.path)))
+            })
+            .collect::<Vec<_>>();
+
+        let total_files = results.iter().map(|(_, r)| r.count).sum();
         if total_files == 0 {
             return None;
         }
 
         let mut rng = rand::rng();
         let mut index = rng.random_range(0..total_files);
-        for result in results {
+        for (root_path, result) in results {
             if index < result.count {
+                let root_index = self.roots.iter().position(|r| r.path == *root_path).unwrap();
+                self.roots[root_index].usage_count += 1;
                 return result.selected;
             }
 
