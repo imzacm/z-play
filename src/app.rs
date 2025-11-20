@@ -223,11 +223,24 @@ impl eframe::App for App {
                 ui.label(format!("Playing: {}", file.path.display()));
             }
 
+            let mut toggle_play_pause = false;
+            ui.ctx().input(|i| {
+                toggle_play_pause = i.key_released(egui::Key::Space);
+            });
+
             ui.centered_and_justified(|ui| match &mut self.player_state {
                 PlayerState::None | PlayerState::Error(_) => {
                     ui.spinner();
                 }
                 PlayerState::Video { player, .. } => {
+                    if toggle_play_pause {
+                        if player.player_state.get() == egui_video::PlayerState::Paused {
+                            player.resume();
+                        } else {
+                            player.pause();
+                        }
+                    }
+
                     let available_size = ui.available_size();
                     let video_size = player.size;
                     if video_size.x > 0.0 && video_size.y > 0.0 && video_size != available_size {
@@ -245,11 +258,14 @@ impl eframe::App for App {
                     player.ui(ui, player.size);
                 }
                 PlayerState::Audio { player, .. } => {
+                    // TODO: Expose audio control functions in egui_player.
                     player.ui(ui);
                 }
                 PlayerState::Image { file, started, .. } => {
                     let uri = format!("file://{}", file.path.display());
                     let image = egui::Image::new(uri).maintain_aspect_ratio(true);
+
+                    // TODO: Figure out a way to pause image timer.
 
                     if started.is_none() {
                         match image.load_for_size(ui.ctx(), ui.available_size()) {
@@ -259,7 +275,6 @@ impl eframe::App for App {
                             Ok(egui::load::TexturePoll::Pending { .. }) => (),
                             Err(error) => {
                                 self.player_state = PlayerState::Error(error.to_string());
-                                self.next_file(ui.ctx());
                                 ctx.request_repaint();
                             }
                         }
