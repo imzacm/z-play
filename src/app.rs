@@ -7,6 +7,8 @@ use eframe::egui::Widget;
 use crate::media_type::{MediaFile, MediaType};
 use crate::random_files::RandomFiles;
 
+const FILE_BUFFER_SIZE: usize = 10;
+
 enum FileState {
     NotStarted,
     Started(flume::Receiver<Result<MediaFile, String>>),
@@ -104,7 +106,7 @@ impl App {
 
         self.file_state = match std::mem::replace(&mut self.file_state, FileState::Ended) {
             FileState::NotStarted => {
-                let (file_tx, file_rx) = flume::bounded(2);
+                let (file_tx, file_rx) = flume::bounded(FILE_BUFFER_SIZE);
                 let ctx = ctx.clone();
                 let files = RandomFiles::new(&self.root_paths);
                 std::thread::spawn(move || file_feeder(ctx, file_tx, files));
@@ -166,6 +168,8 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Z-Play");
             ui.collapsing("Roots", |ui| {
+                let mut roots_changed = false;
+
                 ui.horizontal(|ui| {
                     let mut add_paths = None;
 
@@ -181,10 +185,14 @@ impl eframe::App for App {
 
                     if let Some(add_paths) = add_paths {
                         self.root_paths.reserve(add_paths.len());
+                        let old_len = self.root_paths.len();
                         for path in add_paths {
                             if !self.root_paths.contains(&path) {
                                 self.root_paths.push(path);
                             }
+                        }
+                        if self.root_paths.len() != old_len {
+                            roots_changed = true;
                         }
                     }
                 });
@@ -203,9 +211,32 @@ impl eframe::App for App {
                     }
 
                     if let Some(index) = remove_index {
+                        roots_changed = true;
                         self.root_paths.remove(index);
                     }
                 });
+
+                if roots_changed {
+                    let mut ready = Vec::new();
+                    if let FileState::Started(file_rx) = &self.file_state {
+                        ready.reserve(file_rx.len());
+                        for file in file_rx.try_iter().flatten() {
+                            ready.push(file);
+                        }
+                    }
+
+                    assert!(ready.len() <= FILE_BUFFER_SIZE);
+
+                    let (file_tx, file_rx) = flume::bounded(FILE_BUFFER_SIZE);
+                    for file in ready {
+                        file_tx.send(Ok(file)).unwrap();
+                    }
+
+                    let ctx = ui.ctx().clone();
+                    let files = RandomFiles::new(&self.root_paths);
+                    std::thread::spawn(move || file_feeder(ctx, file_tx, files));
+                    self.file_state = FileState::Started(file_rx);
+                }
             });
             ui.horizontal(|ui| {
                 if let PlayerState::Error(error) = &self.player_state {
@@ -213,11 +244,23 @@ impl eframe::App for App {
                 }
             });
 
-            let next_button = ui.button("Next");
+            ui.horizontal(|ui| {
+                let next_button = ui.button("Next");
+                if next_button.clicked() || self.player_state.is_ended() {
+                    self.next_file(ui.ctx());
+                }
 
-            if next_button.clicked() || self.player_state.is_ended() {
-                self.next_file(ui.ctx());
-            }
+                if let FileState::Started(file_rx) = &self.file_state {
+                    let len = file_rx.len();
+                    ui.label(format!("File queue length: {len}"));
+
+                    let clear_button = ui.button("Clear queue");
+                    if clear_button.clicked() {
+                        for _ in file_rx.try_iter() {}
+                        ui.ctx().request_repaint();
+                    }
+                }
+            });
 
             if let Some(file) = self.player_state.file() {
                 ui.label(format!("Playing: {}", file.path.display()));
