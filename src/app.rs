@@ -2,12 +2,13 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
+use eframe::egui::Widget;
 
 use crate::media_type::{MediaFile, MediaType};
 use crate::random_files::RandomFiles;
 
 enum FileState {
-    NotStarted(RandomFiles),
+    NotStarted,
     Started(flume::Receiver<Result<MediaFile, String>>),
     Ended,
 }
@@ -15,7 +16,7 @@ enum FileState {
 impl FileState {
     fn file_rx(&self) -> Option<&flume::Receiver<Result<MediaFile, String>>> {
         match self {
-            FileState::NotStarted(_) => None,
+            FileState::NotStarted => None,
             FileState::Started(file_rx) => Some(file_rx),
             FileState::Ended => None,
         }
@@ -27,7 +28,7 @@ enum PlayerState {
     Error(String),
     Video { file: MediaFile, player: egui_video::Player },
     Audio { file: MediaFile, player: egui_player::player::Player },
-    Image { file: MediaFile, next_at: Instant },
+    Image { file: MediaFile, started: Option<Instant>, duration: Duration },
 }
 
 impl PlayerState {
@@ -49,27 +50,50 @@ impl PlayerState {
             Self::Audio { player, .. } => {
                 player.player_state == egui_player::player::PlayerState::Ended
             }
-            Self::Image { next_at, .. } => *next_at <= Instant::now(),
+            Self::Image { started, duration, .. } => {
+                started.is_some_and(|s| s.elapsed() >= *duration)
+            }
+        }
+    }
+
+    fn progress(&self) -> Option<f32> {
+        let (elapsed, duration) = match self {
+            Self::None | Self::Error(_) => return None,
+            Self::Video { player, .. } => (player.elapsed_ms() as f32, player.duration_ms as f32),
+            Self::Audio { player, .. } => {
+                (player.elapsed_time.as_secs_f32(), player.total_time.as_secs_f32())
+            }
+            Self::Image { started, duration, .. } => {
+                let started = started.as_ref()?;
+                (started.elapsed().as_secs_f32(), duration.as_secs_f32())
+            }
+        };
+        if elapsed > 0.0 && duration > 0.0 {
+            Some((elapsed / duration).clamp(0.0, 1.0))
+        } else {
+            None
         }
     }
 }
 
 pub struct App {
+    root_paths: Vec<PathBuf>,
     audio_device: egui_video::AudioDevice,
     player_state: PlayerState,
     file_state: FileState,
 }
 
 impl App {
-    pub fn new<I>(files: I) -> Self
+    pub fn new<I>(root_paths: I) -> Self
     where
         I: IntoIterator<Item: Into<PathBuf>>,
     {
         let audio_device = egui_video::AudioDevice::new().unwrap();
         Self {
+            root_paths: root_paths.into_iter().map(Into::into).collect(),
             audio_device,
             player_state: PlayerState::None,
-            file_state: FileState::NotStarted(RandomFiles::new(files)),
+            file_state: FileState::NotStarted,
         }
     }
 
@@ -79,9 +103,10 @@ impl App {
         }
 
         self.file_state = match std::mem::replace(&mut self.file_state, FileState::Ended) {
-            FileState::NotStarted(files) => {
+            FileState::NotStarted => {
                 let (file_tx, file_rx) = flume::bounded(2);
                 let ctx = ctx.clone();
+                let files = RandomFiles::new(&self.root_paths);
                 std::thread::spawn(move || file_feeder(ctx, file_tx, files));
                 FileState::Started(file_rx)
             }
@@ -123,8 +148,8 @@ impl App {
                 self.player_state = PlayerState::Video { file, player };
             }
             MediaType::Image => {
-                let next_at = Instant::now() + Duration::from_secs(10);
-                self.player_state = PlayerState::Image { file, next_at };
+                let duration = Duration::from_secs(10);
+                self.player_state = PlayerState::Image { file, started: None, duration };
             }
             MediaType::Audio => {
                 let path = path.to_string_lossy();
@@ -140,6 +165,48 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Z-Play");
+            ui.collapsing("Roots", |ui| {
+                ui.horizontal(|ui| {
+                    let mut add_paths = None;
+
+                    let add_file_button = ui.button("Add files");
+                    if add_file_button.clicked() {
+                        add_paths = rfd::FileDialog::new().pick_files();
+                    }
+
+                    let add_folder_button = ui.button("Add folders");
+                    if add_folder_button.clicked() {
+                        add_paths = rfd::FileDialog::new().pick_folders();
+                    }
+
+                    if let Some(add_paths) = add_paths {
+                        self.root_paths.reserve(add_paths.len());
+                        for path in add_paths {
+                            if !self.root_paths.contains(&path) {
+                                self.root_paths.push(path);
+                            }
+                        }
+                    }
+                });
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let mut remove_index = None;
+                    for (index, path) in self.root_paths.iter().enumerate() {
+                        let path = path.to_string_lossy();
+                        ui.horizontal(|ui| {
+                            ui.label(path);
+                            let remove_button = ui.button("-");
+                            if remove_button.clicked() {
+                                remove_index = Some(index);
+                            }
+                        });
+                    }
+
+                    if let Some(index) = remove_index {
+                        self.root_paths.remove(index);
+                    }
+                });
+            });
             ui.horizontal(|ui| {
                 if let PlayerState::Error(error) = &self.player_state {
                     ui.label(format!("Error: {error}"));
@@ -149,7 +216,7 @@ impl eframe::App for App {
             let next_button = ui.button("Next");
 
             if next_button.clicked() || self.player_state.is_ended() {
-                self.next_file(ctx);
+                self.next_file(ui.ctx());
             }
 
             if let Some(file) = self.player_state.file() {
@@ -157,7 +224,9 @@ impl eframe::App for App {
             }
 
             ui.centered_and_justified(|ui| match &mut self.player_state {
-                PlayerState::None | PlayerState::Error(_) => (),
+                PlayerState::None | PlayerState::Error(_) => {
+                    ui.spinner();
+                }
                 PlayerState::Video { player, .. } => {
                     let available_size = ui.available_size();
                     let video_size = player.size;
@@ -178,11 +247,32 @@ impl eframe::App for App {
                 PlayerState::Audio { player, .. } => {
                     player.ui(ui);
                 }
-                PlayerState::Image { file, .. } => {
+                PlayerState::Image { file, started, .. } => {
                     let uri = format!("file://{}", file.path.display());
-                    ui.image(uri);
+                    let image = egui::Image::new(uri).maintain_aspect_ratio(true);
+
+                    if started.is_none() {
+                        match image.load_for_size(ui.ctx(), ui.available_size()) {
+                            Ok(egui::load::TexturePoll::Ready { .. }) => {
+                                *started = Some(Instant::now());
+                            }
+                            Ok(egui::load::TexturePoll::Pending { .. }) => (),
+                            Err(error) => {
+                                self.player_state = PlayerState::Error(error.to_string());
+                                self.next_file(ui.ctx());
+                                ctx.request_repaint();
+                            }
+                        }
+                    }
+
+                    image.ui(ui);
                 }
             });
+
+            if let Some(progress) = self.player_state.progress() {
+                egui::ProgressBar::new(progress).ui(ui);
+                ctx.request_repaint_after(Duration::from_millis(10));
+            }
         });
     }
 }
