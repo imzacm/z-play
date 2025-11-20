@@ -74,6 +74,10 @@ impl App {
     }
 
     fn next_file(&mut self, ctx: &egui::Context) {
+        if !matches!(self.player_state, PlayerState::Error(_)) {
+            self.player_state = PlayerState::None;
+        }
+
         self.file_state = match std::mem::replace(&mut self.file_state, FileState::Ended) {
             FileState::NotStarted(files) => {
                 let (file_tx, file_rx) = flume::bounded(2);
@@ -115,7 +119,6 @@ impl App {
                     }
                 };
                 player.options.looping = false;
-                // TODO: Maintain aspect ratio.
                 player.start();
                 self.player_state = PlayerState::Video { file, player };
             }
@@ -145,7 +148,6 @@ impl eframe::App for App {
 
             let next_button = ui.button("Next");
 
-            // TODO: Seeking starts next file.
             if next_button.clicked() || self.player_state.is_ended() {
                 self.next_file(ctx);
             }
@@ -154,10 +156,23 @@ impl eframe::App for App {
                 ui.label(format!("Playing: {}", file.path.display()));
             }
 
-            match &mut self.player_state {
+            ui.centered_and_justified(|ui| match &mut self.player_state {
                 PlayerState::None | PlayerState::Error(_) => (),
                 PlayerState::Video { player, .. } => {
-                    player.size = ui.available_size();
+                    let available_size = ui.available_size();
+                    let video_size = player.size;
+                    if video_size.x > 0.0 && video_size.y > 0.0 && video_size != available_size {
+                        let aspect_ratio = video_size.x / video_size.y;
+                        let mut width = available_size.x;
+                        let mut height = available_size.x / aspect_ratio;
+
+                        if height > available_size.y {
+                            height = available_size.y;
+                            width = height * aspect_ratio;
+                        }
+
+                        player.size = egui::Vec2::new(width, height);
+                    }
                     player.ui(ui, player.size);
                 }
                 PlayerState::Audio { player, .. } => {
@@ -167,7 +182,7 @@ impl eframe::App for App {
                     let uri = format!("file://{}", file.path.display());
                     ui.image(uri);
                 }
-            }
+            });
         });
     }
 }

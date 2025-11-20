@@ -12,9 +12,12 @@ flume = "0.11"
 
 ffmpeg-next = "8.0"
 
-eframe = "0.31"
-egui_extras = { version = "0.31", features = ["file", "http", "image", "gif"] }
+eframe = "0.33"
+egui_extras = { version = "0.33", features = ["file", "http", "image", "gif", "webp"] }
+image = { version = "0.25", features = ["default", "rayon"] }
 
 # egui-video = { path = "../egui-video" }
-egui-video = { git = "https://github.com/imzacm/egui-video.git", rev = "f1197f409f254e7c29dc6b9d4c5296f65173d91b" }
-egui_player = "0.1.3"
+egui-video = { git = "https://github.com/imzacm/egui-video.git", rev = "8bafa697023897b843140c5a1f2aa4bc3e2461cf" }
+
+# egui_player = { path = "../egui_player" }
+egui_player = { git = "https://github.com/imzacm/egui_player.git", rev = "cf34daa018c5a06ded19de3a71ad6deb3689e14a" }
