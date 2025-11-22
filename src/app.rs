@@ -1,22 +1,28 @@
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use eframe::egui;
 use eframe::egui::Widget;
 
+use crate::Error;
 use crate::media_type::{MediaFile, MediaType};
+use crate::player::{Event, Player};
 use crate::random_files::RandomFiles;
 
 const FILE_BUFFER_SIZE: usize = 10;
 
+enum MediaState {
+    Player { file: MediaFile, player: Player },
+    Image { file: MediaFile },
+}
+
 enum FileState {
     NotStarted,
-    Started(flume::Receiver<Result<MediaFile, String>>),
+    Started(flume::Receiver<Result<MediaState, Error>>),
     Ended,
 }
 
 impl FileState {
-    fn file_rx(&self) -> Option<&flume::Receiver<Result<MediaFile, String>>> {
+    fn file_rx(&self) -> Option<&flume::Receiver<Result<MediaState, Error>>> {
         match self {
             FileState::NotStarted => None,
             FileState::Started(file_rx) => Some(file_rx),
@@ -25,64 +31,15 @@ impl FileState {
     }
 }
 
-enum PlayerState {
-    None,
-    Error(String),
-    Video { file: MediaFile, player: egui_video::Player },
-    Audio { file: MediaFile, player: egui_player::player::Player },
-    Image { file: MediaFile, started: Option<Instant>, duration: Duration },
-}
-
-impl PlayerState {
-    fn file(&self) -> Option<&MediaFile> {
-        match self {
-            Self::None | Self::Error(_) => None,
-            Self::Video { file, .. } | Self::Audio { file, .. } | Self::Image { file, .. } => {
-                Some(file)
-            }
-        }
-    }
-
-    fn is_ended(&self) -> bool {
-        match self {
-            Self::None | Self::Error(_) => true,
-            Self::Video { player, .. } => {
-                player.player_state.get() == egui_video::PlayerState::EndOfFile
-            }
-            Self::Audio { player, .. } => {
-                player.player_state == egui_player::player::PlayerState::Ended
-            }
-            Self::Image { started, duration, .. } => {
-                started.is_some_and(|s| s.elapsed() >= *duration)
-            }
-        }
-    }
-
-    fn progress(&self) -> Option<f32> {
-        let (elapsed, duration) = match self {
-            Self::None | Self::Error(_) => return None,
-            Self::Video { player, .. } => (player.elapsed_ms() as f32, player.duration_ms as f32),
-            Self::Audio { player, .. } => {
-                (player.elapsed_time.as_secs_f32(), player.total_time.as_secs_f32())
-            }
-            Self::Image { started, duration, .. } => {
-                let started = started.as_ref()?;
-                (started.elapsed().as_secs_f32(), duration.as_secs_f32())
-            }
-        };
-        if elapsed > 0.0 && duration > 0.0 {
-            Some((elapsed / duration).clamp(0.0, 1.0))
-        } else {
-            None
-        }
-    }
-}
-
 pub struct App {
     root_paths: Vec<PathBuf>,
-    audio_device: egui_video::AudioDevice,
-    player_state: PlayerState,
     file_state: FileState,
+    media_state: Option<MediaState>,
+    error: Option<Error>,
+    texture: Option<egui::TextureHandle>,
+
+    duration: gstreamer::ClockTime,
+    position: gstreamer::ClockTime,
 }
 
 impl App {
@@ -90,20 +47,19 @@ impl App {
     where
         I: IntoIterator<Item: Into<PathBuf>>,
     {
-        let audio_device = egui_video::AudioDevice::new().unwrap();
         Self {
             root_paths: root_paths.into_iter().map(Into::into).collect(),
-            audio_device,
-            player_state: PlayerState::None,
             file_state: FileState::NotStarted,
+            media_state: None,
+            error: None,
+            texture: None,
+
+            duration: gstreamer::ClockTime::ZERO,
+            position: gstreamer::ClockTime::ZERO,
         }
     }
 
     fn next_file(&mut self, ctx: &egui::Context) {
-        if !matches!(self.player_state, PlayerState::Error(_)) {
-            self.player_state = PlayerState::None;
-        }
-
         self.file_state = match std::mem::replace(&mut self.file_state, FileState::Ended) {
             FileState::NotStarted => {
                 let (file_tx, file_rx) = flume::bounded(FILE_BUFFER_SIZE);
@@ -118,53 +74,90 @@ impl App {
 
         let Some(file_rx) = self.file_state.file_rx() else { return };
 
-        let file = match file_rx.try_recv() {
+        let media_state = match file_rx.try_recv() {
             Ok(Ok(file)) => file,
             Ok(Err(error)) => {
-                self.player_state = PlayerState::Error(error);
+                self.error = Some(error);
                 return;
             }
-            Err(_) => return,
+            Err(flume::TryRecvError::Disconnected) => {
+                eprintln!("File channel disconnected");
+                return;
+            }
+            Err(flume::TryRecvError::Empty) => return,
         };
 
-        let path = &file.path;
-        match file.media_type {
-            MediaType::Video => {
-                let path = path.to_string_lossy().into_owned();
-                let player = match egui_video::Player::new(ctx, &path) {
-                    Ok(player) => player,
-                    Err(error) => {
-                        eprintln!("Error creating player: {error}");
-                        return;
-                    }
-                };
-                let mut player = match player.with_audio(&mut self.audio_device) {
-                    Ok(player) => player,
-                    Err(error) => {
-                        eprintln!("Error creating player with audio: {error}");
-                        return;
-                    }
-                };
-                player.options.looping = false;
-                player.start();
-                self.player_state = PlayerState::Video { file, player };
-            }
-            MediaType::Image => {
-                let duration = Duration::from_secs(10);
-                self.player_state = PlayerState::Image { file, started: None, duration };
-            }
-            MediaType::Audio => {
-                let path = path.to_string_lossy();
-                let player = egui_player::player::Player::from_path(path.as_ref());
-                self.player_state = PlayerState::Audio { file, player };
-            }
-            MediaType::Unknown => unreachable!(),
+        if let MediaState::Player { player, .. } = &media_state
+            && let Err(error) = player.play()
+        {
+            self.error = Some(error);
+            return;
         }
+
+        if let Some(MediaState::Player { player, .. }) = self.media_state.take() {
+            _ = player.stop();
+            player.main_loop().quit();
+        }
+
+        self.error = None;
+        self.media_state = Some(media_state);
+        self.texture = None;
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let mut load_next_file = false;
+
+        let (current_file, player) = match &self.media_state {
+            Some(MediaState::Player { file, player }) => {
+                let event_rx = player.event_rx().clone();
+                for event in event_rx.try_iter() {
+                    match event {
+                        Event::EofOfStream => {
+                            load_next_file = true;
+                        }
+                        Event::Error(error) => {
+                            self.error = Some(Error::Any(error));
+                        }
+                        Event::StateChanged(state) => {
+                            // TODO: Play/pause text.
+                        }
+                    }
+                    ctx.request_repaint();
+                }
+
+                self.duration = player.duration().unwrap_or(gstreamer::ClockTime::ZERO);
+                self.position = player.position().unwrap_or(gstreamer::ClockTime::ZERO);
+
+                let mut state_lock = player.state().lock();
+                let frame = state_lock.frame.take();
+                state_lock.egui_context = Some(ctx.clone());
+
+                if let Some(frame) = frame {
+                    let image = egui::ColorImage::from_rgba_unmultiplied(
+                        [frame.width as usize, frame.height as usize],
+                        &frame.data,
+                    );
+                    let texture =
+                        ctx.load_texture("video-frame", image, egui::TextureOptions::LINEAR);
+                    self.texture = Some(texture);
+                }
+
+                (Some(file), Some(player))
+            }
+
+            Some(MediaState::Image { file }) => {
+                self.duration = gstreamer::ClockTime::from_seconds(10);
+                self.position = gstreamer::ClockTime::ZERO;
+                // TODO: Track position.
+
+                (Some(file), None)
+            }
+
+            None => (None, None),
+        };
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Z-Play");
             ui.collapsing("Roots", |ui| {
@@ -238,16 +231,17 @@ impl eframe::App for App {
                     self.file_state = FileState::Started(file_rx);
                 }
             });
+
             ui.horizontal(|ui| {
-                if let PlayerState::Error(error) = &self.player_state {
+                if let Some(error) = &self.error {
                     ui.label(format!("Error: {error}"));
                 }
             });
 
             ui.horizontal(|ui| {
                 let next_button = ui.button("Next");
-                if next_button.clicked() || self.player_state.is_ended() {
-                    self.next_file(ui.ctx());
+                if next_button.clicked() || self.media_state.is_none() {
+                    load_next_file = true;
                 }
 
                 if let FileState::Started(file_rx) = &self.file_state {
@@ -262,7 +256,7 @@ impl eframe::App for App {
                 }
             });
 
-            if let Some(file) = self.player_state.file() {
+            if let Some(file) = current_file {
                 ui.label(format!("Playing: {}", file.path.display()));
             }
 
@@ -271,95 +265,139 @@ impl eframe::App for App {
                 toggle_play_pause = i.key_released(egui::Key::Space);
             });
 
-            ui.centered_and_justified(|ui| match &mut self.player_state {
-                PlayerState::None | PlayerState::Error(_) => {
-                    ui.spinner();
-                }
-                PlayerState::Video { player, .. } => {
-                    if toggle_play_pause {
-                        if player.player_state.get() == egui_video::PlayerState::Paused {
-                            player.resume();
-                        } else {
-                            player.pause();
-                        }
+            if toggle_play_pause && let Some(player) = player {
+                if player.is_playing() {
+                    if let Err(error) = player.pause() {
+                        self.error = Some(error);
                     }
+                } else if let Err(error) = player.play() {
+                    self.error = Some(error);
+                }
+                ctx.request_repaint();
+            }
 
+            ui.centered_and_justified(|ui| {
+                if let Some(texture) = &self.texture {
+                    let video_size = texture.size();
+                    let video_size = egui::Vec2::new(video_size[0] as f32, video_size[1] as f32);
                     let available_size = ui.available_size();
-                    let video_size = player.size;
-                    if video_size.x > 0.0 && video_size.y > 0.0 && video_size != available_size {
-                        let aspect_ratio = video_size.x / video_size.y;
-                        let mut width = available_size.x;
-                        let mut height = available_size.x / aspect_ratio;
 
-                        if height > available_size.y {
-                            height = available_size.y;
-                            width = height * aspect_ratio;
-                        }
+                    let width_ratio = available_size.x / video_size.x;
+                    let height_ratio = available_size.y / video_size.y;
 
-                        player.size = egui::Vec2::new(width, height);
-                    }
-                    player.ui(ui, player.size);
-                }
-                PlayerState::Audio { player, .. } => {
-                    // TODO: Expose audio control functions in egui_player.
-                    player.ui(ui);
-                }
-                PlayerState::Image { file, started, .. } => {
+                    let scale = width_ratio.min(height_ratio);
+
+                    let target_size = video_size * scale;
+
+                    let texture = egui::load::SizedTexture::new(texture.id(), target_size);
+                    ui.add(egui::Image::new(texture));
+                } else if let Some(file) = current_file
+                    && let MediaType::Image = file.media_type
+                {
                     let uri = format!("file://{}", file.path.display());
                     let image = egui::Image::new(uri).maintain_aspect_ratio(true);
 
-                    // TODO: Figure out a way to pause image timer.
-
-                    if started.is_none() {
-                        match image.load_for_size(ui.ctx(), ui.available_size()) {
-                            Ok(egui::load::TexturePoll::Ready { .. }) => {
-                                *started = Some(Instant::now());
-                            }
-                            Ok(egui::load::TexturePoll::Pending { .. }) => (),
-                            Err(error) => {
-                                self.player_state = PlayerState::Error(error.to_string());
-                                ctx.request_repaint();
-                            }
+                    match image.load_for_size(ui.ctx(), ui.available_size()) {
+                        Ok(egui::load::TexturePoll::Ready { .. }) => (),
+                        Ok(egui::load::TexturePoll::Pending { .. }) => {
+                            ui.spinner();
+                        }
+                        Err(error) => {
+                            self.error = Some(error.into());
+                            ctx.request_repaint();
                         }
                     }
 
                     image.ui(ui);
+                } else {
+                    ui.spinner();
                 }
             });
 
-            if let Some(progress) = self.player_state.progress() {
+            let elapsed_secs = self.position.seconds_f32();
+            let duration_secs = self.duration.seconds_f32();
+
+            let progress = if elapsed_secs > 0.0 && duration_secs > 0.0 {
+                Some((elapsed_secs / duration_secs).clamp(0.0, 1.0))
+            } else {
+                None
+            };
+
+            println!("Position: {:.2}s, Elapsed: {elapsed_secs:.2}s, Duration: {duration_secs:.2}s, Progress: {:.2}", self.position.seconds_f32(), progress.unwrap_or(0.0));
+
+            if let Some(progress) = progress {
                 egui::ProgressBar::new(progress).ui(ui);
-                ctx.request_repaint_after(Duration::from_millis(10));
             }
         });
+
+        if load_next_file {
+            self.next_file(ctx);
+        }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Some(MediaState::Player { player, .. }) = &self.media_state {
+            _ = player.stop();
+            player.main_loop().quit();
+        }
     }
 }
 
 fn file_feeder(
     ctx: egui::Context,
-    file_tx: flume::Sender<Result<MediaFile, String>>,
+    file_tx: flume::Sender<Result<MediaState, Error>>,
     mut files: RandomFiles,
 ) {
-    loop {
+    eprintln!("Starting file feeder");
+    'main_loop: loop {
         if file_tx.is_disconnected() {
+            eprintln!("File channel disconnected, stopping feeder");
             break;
         }
 
         let Some(path) = files.next() else {
-            _ = file_tx.send(Err("No files found".to_string()));
+            eprintln!("No files found, stopping feeder");
+            _ = file_tx.send(Err(Error::NoFilesFound));
             ctx.request_repaint();
             break;
         };
 
-        match MediaType::detect(&path) {
+        let media_state = match MediaType::detect(&path) {
             Ok(MediaType::Unknown) => {
                 eprintln!("Unknown media type for {path:?}");
+                continue;
+            }
+            Ok(media_type @ MediaType::Image) => {
+                MediaState::Image { file: MediaFile { path, media_type } }
             }
             Ok(media_type) => {
-                _ = file_tx.send(Ok(MediaFile { path, media_type }));
-                ctx.request_repaint();
+                let player = Player::new().expect("Failed to create player");
+                if let Err(error) = player.set_path(&path) {
+                    eprintln!("Failed to set path for {path:?}: {error}");
+                    continue;
+                }
+                for event in player.event_rx() {
+                    match event {
+                        Event::Error(error) => {
+                            eprintln!("Error on player for {path:?}: {error}");
+                            _ = player.stop();
+                            continue 'main_loop;
+                        }
+                        Event::StateChanged(gstreamer::State::Paused) => {
+                            break;
+                        }
+                        _ => (),
+                    }
+                }
+                MediaState::Player { file: MediaFile { path, media_type }, player }
             }
-            Err(error) => eprintln!("Error detecting media type: {error}"),
-        }
+            Err(error) => {
+                eprintln!("Error detecting media type: {error}");
+                continue;
+            }
+        };
+
+        _ = file_tx.send(Ok(media_state));
+        ctx.request_repaint();
     }
 }
