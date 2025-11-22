@@ -119,7 +119,7 @@ impl Player {
     }
 
     pub fn set_uri(&self, uri: glib::GString) -> Result<(), Error> {
-        _ = self.pipeline.set_state(gstreamer::State::Paused);
+        _ = self.pipeline.set_state(gstreamer::State::Null);
 
         let video_bin = self.pipeline.by_name("video_bin").unwrap();
         let video_sink_pad = video_bin.static_pad("sink").unwrap();
@@ -140,7 +140,7 @@ impl Player {
         let src = self.pipeline.by_name("uri_decode").unwrap();
         src.set_property("uri", uri);
 
-        self.pipeline.set_state(gstreamer::State::Ready)?;
+        self.pipeline.set_state(gstreamer::State::Paused)?;
 
         Ok(())
     }
