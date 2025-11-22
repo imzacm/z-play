@@ -6,9 +6,31 @@ use eframe::egui;
 
 mod app;
 mod media_type;
+mod player;
 mod random_files;
 
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("No files found")]
+    NoFilesFound,
+
+    #[error(transparent)]
+    EguiLoad(#[from] egui::load::LoadError),
+
+    #[error("{0}")]
+    Any(String),
+
+    #[error(transparent)]
+    Glib(#[from] glib::Error),
+    #[error(transparent)]
+    GlibBool(#[from] glib::BoolError),
+    #[error(transparent)]
+    StateChange(#[from] gstreamer::StateChangeError),
+}
+
 fn main() -> eframe::Result {
+    gstreamer::init().expect("Failed to initialize GStreamer");
+
     let args = std::env::args_os().skip(1);
     let root_dirs = args.map(PathBuf::from).collect::<Vec<_>>();
 
