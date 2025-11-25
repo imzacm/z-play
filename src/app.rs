@@ -111,12 +111,12 @@ fn queue_loop(
 ) {
     loop {
         let Some(queue) = queue.upgrade() else {
-            eprintln!("Queue dropped, stopping queue loop");
+            log::info!("Queue dropped, stopping queue loop");
             break;
         };
 
         let Ok(pipeline) = pipeline_rx.recv() else {
-            eprintln!("Pipeline rx disconnected, stopping queue loop");
+            log::info!("Pipeline rx disconnected, stopping queue loop");
             break;
         };
 
@@ -129,13 +129,14 @@ fn queue_loop(
         {
             let mut queue_lock = queue.lock();
             for pipeline in pipeline_rx.try_iter() {
-                let path = pipeline.path();
-                println!("Queueing {}", path.display());
-
-                queue_lock.push_back(pipeline);
                 if queue_lock.len() >= MAX_QUEUE_SIZE {
                     break;
                 }
+
+                let path = pipeline.path();
+                log::info!("Queueing {}", path.display());
+
+                queue_lock.push_back(pipeline);
             }
         }
 
@@ -147,7 +148,7 @@ fn pre_roll_loop(pipeline_rx: flume::Receiver<Pipeline>, pipeline_tx: flume::Sen
     let mut queue = VecDeque::<Pipeline>::with_capacity(MAX_PRE_ROLL_QUEUE_SIZE);
     'main: loop {
         if pipeline_tx.is_disconnected() {
-            eprintln!("Pipeline tx disconnected, stopping pre-roll loop");
+            log::info!("Pipeline tx disconnected, stopping pre-roll loop");
             break;
         }
 
@@ -166,20 +167,20 @@ fn pre_roll_loop(pipeline_rx: flume::Receiver<Pipeline>, pipeline_tx: flume::Sen
                 for event in iter {
                     match event {
                         Event::Error(error) => {
-                            eprintln!("Error on player for {path:?}: {error}");
+                            log::info!("Error on player for {path:?}: {error}");
                             continue 'pre_roll;
                         }
                         Event::StateChanged { from: _, to: gstreamer::State::Ready } => (),
                         Event::StateChanged { from: _, to: gstreamer::State::Paused } => {
                             is_paused = true;
                         }
-                        event => eprintln!("Unhandled event on player for {path:?} - {event:?}"),
+                        event => log::info!("Unhandled event on player for {path:?} - {event:?}"),
                     }
                 }
 
                 if is_paused {
                     if pipeline_tx.send(pipeline).is_err() {
-                        eprintln!("Pipeline tx disconnected, stopping pre-roll loop");
+                        log::info!("Pipeline tx disconnected, stopping pre-roll loop");
                         break 'main;
                     }
                 } else {
@@ -197,7 +198,7 @@ fn pre_roll_loop(pipeline_rx: flume::Receiver<Pipeline>, pipeline_tx: flume::Sen
             Ok(pipeline) => pipeline,
             Err(flume::RecvTimeoutError::Timeout) => continue,
             Err(flume::RecvTimeoutError::Disconnected) => {
-                eprintln!("Pipeline rx disconnected, stopping pre-roll loop");
+                log::info!("Pipeline rx disconnected, stopping pre-roll loop");
                 break;
             }
         };
@@ -205,7 +206,7 @@ fn pre_roll_loop(pipeline_rx: flume::Receiver<Pipeline>, pipeline_tx: flume::Sen
 
         for pipeline in pipeline_rx.try_iter() {
             queue.push_back(pipeline);
-            if queue.len() == MAX_PRE_ROLL_QUEUE_SIZE {
+            if queue.len() >= MAX_PRE_ROLL_QUEUE_SIZE {
                 break;
             }
         }
@@ -219,18 +220,18 @@ fn pipeline_loop(
 ) {
     loop {
         if pipeline_tx.is_disconnected() {
-            eprintln!("Pipeline tx disconnected, stopping pipeline loop");
+            log::info!("Pipeline tx disconnected, stopping pipeline loop");
             break;
         }
 
         let Some(path) = files.lock().next() else {
-            eprintln!("No files found, stopping pre-roll loop");
+            log::info!("No files found, stopping pre-roll loop");
             break;
         };
 
         match MediaType::detect(&path) {
             Ok(MediaType::Unknown) => {
-                eprintln!("Unknown media type for {path:?}");
+                log::info!("Unknown media type for {path:?}");
                 continue;
             }
             Ok(media_type) => {
@@ -238,23 +239,23 @@ fn pipeline_loop(
                 let pipeline = match Pipeline::new(path.clone(), media_type, ctx.clone()) {
                     Ok(pipeline) => pipeline,
                     Err(error) => {
-                        eprintln!("Failed to set path for {}: {error}", path.display());
+                        log::info!("Failed to set path for {}: {error}", path.display());
                         continue;
                     }
                 };
 
                 if let Err(error) = pipeline.set_state(gstreamer::State::Paused) {
-                    eprintln!("Failed to set state for {}: {error}", path.display());
+                    log::info!("Failed to set state for {}: {error}", path.display());
                     continue;
                 }
 
                 if pipeline_tx.send(pipeline).is_err() {
-                    eprintln!("Pipeline tx disconnected, stopping pipeline loop");
+                    log::info!("Pipeline tx disconnected, stopping pipeline loop");
                     break;
                 }
             }
             Err(error) => {
-                eprintln!("Error detecting media type: {error}");
+                log::info!("Error detecting media type: {error}");
             }
         }
     }
@@ -265,7 +266,7 @@ fn start_file_feeder(
     queue: Weak<Mutex<VecDeque<Pipeline>>>,
     files: Arc<Mutex<RandomFiles>>,
 ) {
-    eprintln!("Starting file feeder");
+    log::info!("Starting file feeder");
 
     let (initial_pipeline_tx, initial_pipeline_rx) = flume::bounded(MAX_PRE_ROLL_QUEUE_SIZE);
     let ctx_clone = ctx.clone();

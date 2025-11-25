@@ -47,6 +47,8 @@ impl Pipeline {
         media_type: MediaType,
         ctx: eframe::egui::Context,
     ) -> Result<Self, Error> {
+        gstreamer::init().expect("Failed to initialize GStreamer");
+
         let state = Arc::new(Mutex::new(State::default()));
         let pipeline = create_pipeline(path, media_type, ctx, state.clone())?;
         let (event_tx, event_rx) = flume::bounded(10);
@@ -182,24 +184,24 @@ fn create_pipeline(
 
     decode_bin.connect_pad_added(move |_decode_bin, src_pad| {
         let pad_name = src_pad.name();
-        println!("Decoder: New pad added: {pad_name} - {}", path.display());
+        log::info!("Decoder: New pad added: {pad_name} - {}", path.display());
 
         if pad_name.starts_with("video_") {
             let Some(video_sink_pad) = video_sink_pad_weak.upgrade() else { return };
             if !video_sink_pad.is_linked()
                 && let Err(error) = src_pad.link(&video_sink_pad)
             {
-                eprintln!("Failed to link video pad: {error}");
+                log::info!("Failed to link video pad: {error}");
             }
         } else if pad_name.starts_with("audio_") {
             let Some(audio_sink_pad) = audio_sink_pad_weak.upgrade() else { return };
             if !audio_sink_pad.is_linked()
                 && let Err(error) = src_pad.link(&audio_sink_pad)
             {
-                eprintln!("Failed to link audio pad: {error}");
+                log::info!("Failed to link audio pad: {error}");
             }
         } else {
-            eprintln!("Unknown pad type: {pad_name}");
+            log::info!("Unknown pad type: {pad_name}");
         }
     });
 
@@ -302,7 +304,7 @@ fn run_pipeline(
             let _bus_watch = bus
                 .add_watch_local(move |_, msg| {
                     if print_messages {
-                        eprintln!("Message: {msg:?}");
+                        log::info!("Message: {msg:?}");
                     }
 
                     match msg.view() {

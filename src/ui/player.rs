@@ -47,7 +47,7 @@ impl PlayerUi {
                     }
                     Event::StateChanged { from, to } => {
                         // TODO: Play/pause text.
-                        eprintln!("Pipeline state changed {} - {from:?} -> {to:?}", path.display());
+                        log::info!("Pipeline state changed {} - {from:?} -> {to:?}", path.display());
                     }
                 }
             }
@@ -164,11 +164,11 @@ impl PlayerUi {
         if toggle_play_pause {
             if pipeline.state() == gstreamer::State::Playing {
                 if let Err(error) = pipeline.set_state(gstreamer::State::Paused) {
-                    eprintln!("Error pausing player: {error}");
+                    log::info!("Error pausing player: {error}");
                     response.error = Some(error);
                 }
             } else if let Err(error) = pipeline.set_state(gstreamer::State::Playing) {
-                eprintln!("Error playing player: {error}");
+                log::info!("Error playing player: {error}");
                 response.error = Some(error);
             }
         }
