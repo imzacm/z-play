@@ -5,15 +5,13 @@ use std::path::PathBuf;
 use eframe::egui;
 
 mod app;
+mod gstreamer_pipeline;
 mod media_type;
-mod player;
 mod random_files;
+mod ui;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("No files found")]
-    NoFilesFound,
-
     #[error(transparent)]
     EguiLoad(#[from] egui::load::LoadError),
 
@@ -38,13 +36,5 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default().with_inner_size([320.0, 240.0]),
         ..Default::default()
     };
-    eframe::run_native(
-        "Z-Play",
-        options,
-        Box::new(|cc| {
-            egui_extras::install_image_loaders(&cc.egui_ctx);
-
-            Ok(Box::new(app::App::new(root_dirs)))
-        }),
-    )
+    eframe::run_native("Z-Play", options, Box::new(|_| Ok(Box::new(app::App::new(root_dirs)))))
 }
