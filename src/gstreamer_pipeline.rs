@@ -4,7 +4,7 @@ use std::sync::Arc;
 use glib::object::{Cast, ObjectExt};
 use gstreamer::MessageView;
 use gstreamer::prelude::{
-    ElementExt, ElementExtManual, GstBinExt, GstBinExtManual, GstObjectExt, PadExt,
+    ElementExt, ElementExtManual, GstBinExt, GstBinExtManual, GstObjectExt, PadExt, PadExtManual,
 };
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
 
@@ -206,9 +206,11 @@ fn create_pipeline(
     });
 
     let pipeline_weak = pipeline.downgrade();
+    let state_clone = state.clone();
     video_app_sink.set_callbacks(
         gstreamer_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
+                let state = &state_clone;
                 let sample = sink.pull_sample().map_err(|_| gstreamer::FlowError::Eos)?;
                 let buffer = sample.buffer().ok_or(gstreamer::FlowError::Error)?;
                 let caps = sample.caps().ok_or(gstreamer::FlowError::Error)?;
@@ -244,6 +246,26 @@ fn create_pipeline(
             })
             .build(),
     );
+
+    let pipeline_weak = pipeline.downgrade();
+    audio_sink_pad.add_probe(gstreamer::PadProbeType::BUFFER, move |_pad, info| {
+        if let Some(buffer) = info.buffer() {
+            let mut state_lock = state.lock();
+
+            if state_lock.duration == gstreamer::ClockTime::ZERO
+                && let Some(pipeline) = pipeline_weak.upgrade()
+                && let Some(duration) = pipeline.query_duration::<gstreamer::ClockTime>()
+            {
+                state_lock.duration = duration;
+            }
+
+            if let Some(pts) = buffer.pts() {
+                state_lock.position = pts;
+            }
+        }
+
+        gstreamer::PadProbeReturn::Ok
+    });
 
     Ok(pipeline)
 }
