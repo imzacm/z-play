@@ -8,11 +8,11 @@ use crate::media_type::{MediaFile, MediaType};
 use crate::player::{Event, Player};
 use crate::random_files::RandomFiles;
 
-const FILE_BUFFER_SIZE: usize = 10;
+const FILE_BUFFER_SIZE: usize = 100;
 
 enum MediaState {
     Player { file: MediaFile, player: Player },
-    Image { file: MediaFile },
+    Image { file: MediaFile, paused: bool },
 }
 
 enum FileState {
@@ -102,6 +102,9 @@ impl App {
         self.error = None;
         self.media_state = Some(media_state);
         self.texture = None;
+
+        self.duration = gstreamer::ClockTime::ZERO;
+        self.position = gstreamer::ClockTime::ZERO;
     }
 }
 
@@ -114,7 +117,7 @@ impl eframe::App for App {
                 let event_rx = player.event_rx().clone();
                 for event in event_rx.try_iter() {
                     match event {
-                        Event::EofOfStream => {
+                        Event::EndOfStream => {
                             load_next_file = true;
                         }
                         Event::Error(error) => {
@@ -122,6 +125,7 @@ impl eframe::App for App {
                         }
                         Event::StateChanged(state) => {
                             // TODO: Play/pause text.
+                            eprintln!("Player state changed {} - {state:?}", file.path.display());
                         }
                     }
                     ctx.request_repaint();
@@ -147,16 +151,16 @@ impl eframe::App for App {
                 (Some(file), Some(player))
             }
 
-            Some(MediaState::Image { file }) => {
+            Some(MediaState::Image { file, .. }) => {
                 self.duration = gstreamer::ClockTime::from_seconds(10);
-                self.position = gstreamer::ClockTime::ZERO;
-                // TODO: Track position.
-
                 (Some(file), None)
             }
 
             None => (None, None),
         };
+
+        let toggle_play_pause = ctx.input(|i| i.key_released(egui::Key::Space));
+        let mut image_loaded = false;
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Z-Play");
@@ -260,22 +264,6 @@ impl eframe::App for App {
                 ui.label(format!("Playing: {}", file.path.display()));
             }
 
-            let mut toggle_play_pause = false;
-            ui.ctx().input(|i| {
-                toggle_play_pause = i.key_released(egui::Key::Space);
-            });
-
-            if toggle_play_pause && let Some(player) = player {
-                if player.is_playing() {
-                    if let Err(error) = player.pause() {
-                        self.error = Some(error);
-                    }
-                } else if let Err(error) = player.play() {
-                    self.error = Some(error);
-                }
-                ctx.request_repaint();
-            }
-
             ui.centered_and_justified(|ui| {
                 if let Some(texture) = &self.texture {
                     let video_size = texture.size();
@@ -298,7 +286,9 @@ impl eframe::App for App {
                     let image = egui::Image::new(uri).maintain_aspect_ratio(true);
 
                     match image.load_for_size(ui.ctx(), ui.available_size()) {
-                        Ok(egui::load::TexturePoll::Ready { .. }) => (),
+                        Ok(egui::load::TexturePoll::Ready { .. }) => {
+                            image_loaded = true;
+                        }
                         Ok(egui::load::TexturePoll::Pending { .. }) => {
                             ui.spinner();
                         }
@@ -323,12 +313,44 @@ impl eframe::App for App {
                 None
             };
 
-            println!("Position: {:.2}s, Elapsed: {elapsed_secs:.2}s, Duration: {duration_secs:.2}s, Progress: {:.2}", self.position.seconds_f32(), progress.unwrap_or(0.0));
+            // println!("Position: {:.2}s, Elapsed: {elapsed_secs:.2}s, Duration:
+            // {duration_secs:.2}s, Progress: {:.2}", self.position.seconds_f32(),
+            // progress.unwrap_or(0.0));
 
             if let Some(progress) = progress {
                 egui::ProgressBar::new(progress).ui(ui);
             }
         });
+
+        if let Some(MediaState::Image { file, paused }) = &self.media_state
+            && !paused
+            && image_loaded
+            && file.path.extension() != Some(std::ffi::OsStr::new("gif"))
+        {
+            let stable_dt = ctx.input(|i| i.stable_dt);
+            self.position += gstreamer::ClockTime::from_seconds_f32(stable_dt);
+
+            if self.position >= self.duration {
+                load_next_file = true;
+            }
+
+            ctx.request_repaint();
+        }
+
+        if toggle_play_pause && let Some(player) = player {
+            if player.is_playing() {
+                if let Err(error) = player.pause() {
+                    self.error = Some(error);
+                }
+            } else if let Err(error) = player.play() {
+                self.error = Some(error);
+            }
+            ctx.request_repaint();
+        } else if toggle_play_pause
+            && let Some(MediaState::Image { paused, .. }) = &mut self.media_state
+        {
+            *paused = !*paused;
+        }
 
         if load_next_file {
             self.next_file(ctx);
@@ -355,7 +377,9 @@ fn file_feeder(
             break;
         }
 
-        let Some(path) = files.next() else {
+        let timeout = std::time::Duration::from_secs(file_tx.len().max(1) as u64);
+
+        let Some(path) = files.next_with_timeout(timeout) else {
             eprintln!("No files found, stopping feeder");
             _ = file_tx.send(Err(Error::NoFilesFound));
             ctx.request_repaint();
@@ -368,7 +392,7 @@ fn file_feeder(
                 continue;
             }
             Ok(media_type @ MediaType::Image) => {
-                MediaState::Image { file: MediaFile { path, media_type } }
+                MediaState::Image { file: MediaFile { path, media_type }, paused: false }
             }
             Ok(media_type) => {
                 let player = Player::new().expect("Failed to create player");
@@ -383,10 +407,10 @@ fn file_feeder(
                             _ = player.stop();
                             continue 'main_loop;
                         }
-                        Event::StateChanged(gstreamer::State::Paused) => {
+                        Event::StateChanged(gstreamer::State::Ready) => {
                             break;
                         }
-                        _ => (),
+                        event => eprintln!("Unhandled event on player for {path:?} - {event:?}"),
                     }
                 }
                 MediaState::Player { file: MediaFile { path, media_type }, player }

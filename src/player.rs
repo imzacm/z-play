@@ -12,7 +12,7 @@ use crate::Error;
 
 #[derive(Debug)]
 pub enum Event {
-    EofOfStream,
+    EndOfStream,
     Error(String),
     StateChanged(gstreamer::State),
 }
@@ -35,57 +35,63 @@ pub struct Player {
     pipeline: gstreamer::Pipeline,
     state: Arc<Mutex<State>>,
     event_rx: flume::Receiver<Event>,
-    main_loop: glib::MainLoop,
+    loop_: glib::MainLoop,
 }
 
 impl Player {
     pub fn new() -> Result<Self, Error> {
+        let context = glib::MainContext::new();
+        let loop_ = glib::MainLoop::new(Some(&context), false);
+
         let state = Arc::new(Mutex::new(State::default()));
         let pipeline = create_pipeline(state.clone())?;
 
-        let main_loop = glib::MainLoop::new(None, false);
-
         let (event_tx, event_rx) = flume::unbounded();
-        let main_loop_clone = main_loop.clone();
+        let loop_clone = loop_.clone();
         let bus = pipeline.bus().unwrap();
         std::thread::spawn(move || {
-            let _bus_watch = bus
-                .add_watch_local(move |_, msg| {
-                    match msg.view() {
-                        MessageView::Eos(_) => {
-                            if event_tx.send(Event::EofOfStream).is_err() {
-                                main_loop_clone.quit();
+            let loop_ = loop_clone.clone();
+            context.with_thread_default(|| {
+                let _bus_watch = bus
+                    .add_watch_local(move |_, msg| {
+                        match msg.view() {
+                            MessageView::Eos(_) => {
+                                if event_tx.send(Event::EndOfStream).is_err() {
+                                    loop_clone.quit();
+                                }
                             }
-                        }
-                        MessageView::Error(error) => {
-                            let error = format!(
-                                "Error on pipeline: {} (debug: {:?})",
-                                error.error(),
-                                error.debug()
-                            );
-                            if event_tx.send(Event::Error(error)).is_err() {
-                                main_loop_clone.quit();
+                            MessageView::Error(error) => {
+                                let error = format!(
+                                    "Error on pipeline: {} (debug: {:?})",
+                                    error.error(),
+                                    error.debug()
+                                );
+                                if event_tx.send(Event::Error(error)).is_err() {
+                                    loop_clone.quit();
+                                }
                             }
-                        }
-                        // We only care about pipeline state changes.
-                        MessageView::StateChanged(state) => {
-                            let is_pipeline =
-                                state.src().is_some_and(|src| src.is::<gstreamer::Pipeline>());
-                            if is_pipeline
-                                && event_tx.send(Event::StateChanged(state.current())).is_err()
-                            {
-                                main_loop_clone.quit();
+                            // We only care about pipeline state changes.
+                            MessageView::StateChanged(state) => {
+                                let is_pipeline =
+                                    state.src().is_some_and(|src| src.is::<gstreamer::Pipeline>());
+                                if is_pipeline
+                                    && event_tx.send(Event::StateChanged(state.current())).is_err()
+                                {
+                                    loop_clone.quit();
+                                }
                             }
+                            _ => (),
                         }
-                        _ => (),
-                    }
 
-                    glib::ControlFlow::Continue
-                })
-                .expect("Failed to add bus watch");
+                        glib::ControlFlow::Continue
+                    })
+                    .expect("Failed to add bus watch");
+
+                loop_.run();
+            }).unwrap();
         });
 
-        Ok(Self { pipeline, state, event_rx, main_loop })
+        Ok(Self { pipeline, state, event_rx, loop_ })
     }
 
     pub fn state(&self) -> &Arc<Mutex<State>> {
@@ -97,7 +103,7 @@ impl Player {
     }
 
     pub fn main_loop(&self) -> &glib::MainLoop {
-        &self.main_loop
+        &self.loop_
     }
 
     pub fn duration(&self) -> Option<gstreamer::ClockTime> {
@@ -189,9 +195,11 @@ fn create_pipeline(state: Arc<Mutex<State>>) -> Result<gstreamer::Pipeline, Erro
     let audio_sink_pad = audio_bin.static_pad("sink").unwrap();
     let audio_sink_pad_weak = audio_sink_pad.downgrade();
 
-    decode_bin.connect_pad_added(move |_, src_pad| {
+    decode_bin.connect_pad_added(move |decode_bin, src_pad| {
+        let uri: Option<glib::GString> = decode_bin.property("uri");
+
         let pad_name = src_pad.name();
-        println!("Decoder: New pad added: {pad_name}");
+        println!("Decoder: New pad added: {pad_name} - {}", uri.as_ref().map(|uri| uri.as_str()).unwrap_or("<unknown>"));
 
         if pad_name.starts_with("video_") {
             let Some(video_sink_pad) = video_sink_pad_weak.upgrade() else { return };
