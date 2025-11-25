@@ -1,8 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum MediaType {
-    Video,
+    VideoWithAudio,
+    VideoNoAudio,
     Image,
     Audio,
     Unknown,
@@ -15,9 +16,9 @@ impl MediaType {
         let context = ffmpeg_next::format::input(path)?;
 
         let is_image =
-            matches!(context.format().name(), "image2" | "png_pipe" | "mjpeg" | "bmp_pipe" | "gif");
+            matches!(context.format().name(), "image2" | "png_pipe" | "mjpeg" | "bmp_pipe");
 
-        eprintln!("{path:?} - {}", context.format().name());
+        // eprintln!("{path:?} - {}", context.format().name());
 
         if is_image {
             return Ok(Self::Image);
@@ -35,18 +36,14 @@ impl MediaType {
             }
         }
 
-        if has_video {
-            Ok(Self::Video)
+        if has_video && has_audio {
+            Ok(Self::VideoWithAudio)
+        } else if has_video {
+            Ok(Self::VideoNoAudio)
         } else if has_audio {
             Ok(Self::Audio)
         } else {
             Ok(Self::Unknown)
         }
     }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct MediaFile {
-    pub path: PathBuf,
-    pub media_type: MediaType,
 }

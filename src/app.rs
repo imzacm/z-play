@@ -1,88 +1,25 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Weak};
 
 use eframe::egui;
-use eframe::egui::Widget;
+use glib::clone::Downgrade;
+use parking_lot::Mutex;
 
-use crate::media_type::{MediaFile, MediaType};
+use crate::gstreamer_pipeline::{Event, Pipeline};
+use crate::media_type::MediaType;
 use crate::random_files::RandomFiles;
+use crate::{Error, ui};
 
-const FILE_BUFFER_SIZE: usize = 10;
-
-enum FileState {
-    NotStarted,
-    Started(flume::Receiver<Result<MediaFile, String>>),
-    Ended,
-}
-
-impl FileState {
-    fn file_rx(&self) -> Option<&flume::Receiver<Result<MediaFile, String>>> {
-        match self {
-            FileState::NotStarted => None,
-            FileState::Started(file_rx) => Some(file_rx),
-            FileState::Ended => None,
-        }
-    }
-}
-
-enum PlayerState {
-    None,
-    Error(String),
-    Video { file: MediaFile, player: egui_video::Player },
-    Audio { file: MediaFile, player: egui_player::player::Player },
-    Image { file: MediaFile, started: Option<Instant>, duration: Duration },
-}
-
-impl PlayerState {
-    fn file(&self) -> Option<&MediaFile> {
-        match self {
-            Self::None | Self::Error(_) => None,
-            Self::Video { file, .. } | Self::Audio { file, .. } | Self::Image { file, .. } => {
-                Some(file)
-            }
-        }
-    }
-
-    fn is_ended(&self) -> bool {
-        match self {
-            Self::None | Self::Error(_) => true,
-            Self::Video { player, .. } => {
-                player.player_state.get() == egui_video::PlayerState::EndOfFile
-            }
-            Self::Audio { player, .. } => {
-                player.player_state == egui_player::player::PlayerState::Ended
-            }
-            Self::Image { started, duration, .. } => {
-                started.is_some_and(|s| s.elapsed() >= *duration)
-            }
-        }
-    }
-
-    fn progress(&self) -> Option<f32> {
-        let (elapsed, duration) = match self {
-            Self::None | Self::Error(_) => return None,
-            Self::Video { player, .. } => (player.elapsed_ms() as f32, player.duration_ms as f32),
-            Self::Audio { player, .. } => {
-                (player.elapsed_time.as_secs_f32(), player.total_time.as_secs_f32())
-            }
-            Self::Image { started, duration, .. } => {
-                let started = started.as_ref()?;
-                (started.elapsed().as_secs_f32(), duration.as_secs_f32())
-            }
-        };
-        if elapsed > 0.0 && duration > 0.0 {
-            Some((elapsed / duration).clamp(0.0, 1.0))
-        } else {
-            None
-        }
-    }
-}
+const MAX_QUEUE_SIZE: usize = 50;
+const MAX_PRE_ROLL_QUEUE_SIZE: usize = 20;
 
 pub struct App {
     root_paths: Vec<PathBuf>,
-    audio_device: egui_video::AudioDevice,
-    player_state: PlayerState,
-    file_state: FileState,
+    player: ui::PlayerUi,
+    error: Option<Error>,
+    queue: Arc<Mutex<VecDeque<Pipeline>>>,
+    files: Arc<Mutex<RandomFiles>>,
 }
 
 impl App {
@@ -90,276 +27,254 @@ impl App {
     where
         I: IntoIterator<Item: Into<PathBuf>>,
     {
-        let audio_device = egui_video::AudioDevice::new().unwrap();
+        let root_paths = root_paths.into_iter().map(Into::into).collect();
+        let files = RandomFiles::new(&root_paths);
         Self {
-            root_paths: root_paths.into_iter().map(Into::into).collect(),
-            audio_device,
-            player_state: PlayerState::None,
-            file_state: FileState::NotStarted,
-        }
-    }
-
-    fn next_file(&mut self, ctx: &egui::Context) {
-        if !matches!(self.player_state, PlayerState::Error(_)) {
-            self.player_state = PlayerState::None;
-        }
-
-        self.file_state = match std::mem::replace(&mut self.file_state, FileState::Ended) {
-            FileState::NotStarted => {
-                let (file_tx, file_rx) = flume::bounded(FILE_BUFFER_SIZE);
-                let ctx = ctx.clone();
-                let files = RandomFiles::new(&self.root_paths);
-                std::thread::spawn(move || file_feeder(ctx, file_tx, files));
-                FileState::Started(file_rx)
-            }
-            FileState::Started(file_rx) => FileState::Started(file_rx),
-            FileState::Ended => return,
-        };
-
-        let Some(file_rx) = self.file_state.file_rx() else { return };
-
-        let file = match file_rx.try_recv() {
-            Ok(Ok(file)) => file,
-            Ok(Err(error)) => {
-                self.player_state = PlayerState::Error(error);
-                return;
-            }
-            Err(_) => return,
-        };
-
-        let path = &file.path;
-        match file.media_type {
-            MediaType::Video => {
-                let path = path.to_string_lossy().into_owned();
-                let player = match egui_video::Player::new(ctx, &path) {
-                    Ok(player) => player,
-                    Err(error) => {
-                        eprintln!("Error creating player: {error}");
-                        return;
-                    }
-                };
-                let mut player = match player.with_audio(&mut self.audio_device) {
-                    Ok(player) => player,
-                    Err(error) => {
-                        eprintln!("Error creating player with audio: {error}");
-                        return;
-                    }
-                };
-                player.options.looping = false;
-                player.start();
-                self.player_state = PlayerState::Video { file, player };
-            }
-            MediaType::Image => {
-                let duration = Duration::from_secs(10);
-                self.player_state = PlayerState::Image { file, started: None, duration };
-            }
-            MediaType::Audio => {
-                let path = path.to_string_lossy();
-                let player = egui_player::player::Player::from_path(path.as_ref());
-                self.player_state = PlayerState::Audio { file, player };
-            }
-            MediaType::Unknown => unreachable!(),
+            root_paths,
+            player: ui::PlayerUi::default(),
+            error: None,
+            queue: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_QUEUE_SIZE))),
+            files: Arc::new(Mutex::new(files)),
         }
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if Arc::weak_count(&self.queue) == 0 {
+            let queue = self.queue.downgrade();
+            let files = self.files.clone();
+            start_file_feeder(ctx, queue, files);
+        }
+
+        let mut load_next_file = self.player.pipeline().is_none();
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Z-Play");
-            ui.collapsing("Roots", |ui| {
-                let mut roots_changed = false;
 
-                ui.horizontal(|ui| {
-                    let mut add_paths = None;
+            let roots_response = ui::roots_ui(ui, &mut self.root_paths);
+            if roots_response.changed {
+                *self.files.lock() = RandomFiles::new(&self.root_paths);
 
-                    let add_file_button = ui.button("Add files");
-                    if add_file_button.clicked() {
-                        add_paths = rfd::FileDialog::new().pick_files();
-                    }
+                let mut queue_lock = self.queue.lock();
+                queue_lock.retain(|pipeline| {
+                    let path = pipeline.path();
 
-                    let add_folder_button = ui.button("Add folders");
-                    if add_folder_button.clicked() {
-                        add_paths = rfd::FileDialog::new().pick_folders();
-                    }
-
-                    if let Some(add_paths) = add_paths {
-                        self.root_paths.reserve(add_paths.len());
-                        let old_len = self.root_paths.len();
-                        for path in add_paths {
-                            if !self.root_paths.contains(&path) {
-                                self.root_paths.push(path);
-                            }
-                        }
-                        if self.root_paths.len() != old_len {
-                            roots_changed = true;
-                        }
-                    }
+                    // Retain where root exists.
+                    self.root_paths.iter().any(|root| path.starts_with(root))
                 });
+            }
 
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let mut remove_index = None;
-                    for (index, path) in self.root_paths.iter().enumerate() {
-                        let path = path.to_string_lossy();
-                        ui.horizontal(|ui| {
-                            ui.label(path);
-                            let remove_button = ui.button("-");
-                            if remove_button.clicked() {
-                                remove_index = Some(index);
-                            }
-                        });
-                    }
+            ui::queue_ui(ui, &mut self.queue.lock());
 
-                    if let Some(index) = remove_index {
-                        roots_changed = true;
-                        self.root_paths.remove(index);
-                    }
-                });
-
-                if roots_changed {
-                    let mut ready = Vec::new();
-                    if let FileState::Started(file_rx) = &self.file_state {
-                        ready.reserve(file_rx.len());
-                        for file in file_rx.try_iter().flatten() {
-                            ready.push(file);
-                        }
-                    }
-
-                    assert!(ready.len() <= FILE_BUFFER_SIZE);
-
-                    let (file_tx, file_rx) = flume::bounded(FILE_BUFFER_SIZE);
-                    for file in ready {
-                        file_tx.send(Ok(file)).unwrap();
-                    }
-
-                    let ctx = ui.ctx().clone();
-                    let files = RandomFiles::new(&self.root_paths);
-                    std::thread::spawn(move || file_feeder(ctx, file_tx, files));
-                    self.file_state = FileState::Started(file_rx);
-                }
-            });
             ui.horizontal(|ui| {
-                if let PlayerState::Error(error) = &self.player_state {
+                if let Some(error) = &self.error {
                     ui.label(format!("Error: {error}"));
                 }
             });
 
             ui.horizontal(|ui| {
                 let next_button = ui.button("Next");
-                if next_button.clicked() || self.player_state.is_ended() {
-                    self.next_file(ui.ctx());
-                }
-
-                if let FileState::Started(file_rx) = &self.file_state {
-                    let len = file_rx.len();
-                    ui.label(format!("File queue length: {len}"));
-
-                    let clear_button = ui.button("Clear queue");
-                    if clear_button.clicked() {
-                        for _ in file_rx.try_iter() {}
-                        ui.ctx().request_repaint();
-                    }
+                if next_button.clicked() {
+                    load_next_file = true;
                 }
             });
 
-            if let Some(file) = self.player_state.file() {
-                ui.label(format!("Playing: {}", file.path.display()));
+            let player_response = self.player.ui(ui);
+            if let Some(error) = player_response.error {
+                self.error = Some(error);
+                ui.ctx().request_repaint();
             }
 
-            let mut toggle_play_pause = false;
-            ui.ctx().input(|i| {
-                toggle_play_pause = i.key_released(egui::Key::Space);
-            });
-
-            ui.centered_and_justified(|ui| match &mut self.player_state {
-                PlayerState::None | PlayerState::Error(_) => {
-                    ui.spinner();
-                }
-                PlayerState::Video { player, .. } => {
-                    if toggle_play_pause {
-                        if player.player_state.get() == egui_video::PlayerState::Paused {
-                            player.resume();
-                        } else {
-                            player.pause();
-                        }
-                    }
-
-                    let available_size = ui.available_size();
-                    let video_size = player.size;
-                    if video_size.x > 0.0 && video_size.y > 0.0 && video_size != available_size {
-                        let aspect_ratio = video_size.x / video_size.y;
-                        let mut width = available_size.x;
-                        let mut height = available_size.x / aspect_ratio;
-
-                        if height > available_size.y {
-                            height = available_size.y;
-                            width = height * aspect_ratio;
-                        }
-
-                        player.size = egui::Vec2::new(width, height);
-                    }
-                    player.ui(ui, player.size);
-                }
-                PlayerState::Audio { player, .. } => {
-                    // TODO: Expose audio control functions in egui_player.
-                    player.ui(ui);
-                }
-                PlayerState::Image { file, started, .. } => {
-                    let uri = format!("file://{}", file.path.display());
-                    let image = egui::Image::new(uri).maintain_aspect_ratio(true);
-
-                    // TODO: Figure out a way to pause image timer.
-
-                    if started.is_none() {
-                        match image.load_for_size(ui.ctx(), ui.available_size()) {
-                            Ok(egui::load::TexturePoll::Ready { .. }) => {
-                                *started = Some(Instant::now());
-                            }
-                            Ok(egui::load::TexturePoll::Pending { .. }) => (),
-                            Err(error) => {
-                                self.player_state = PlayerState::Error(error.to_string());
-                                ctx.request_repaint();
-                            }
-                        }
-                    }
-
-                    image.ui(ui);
-                }
-            });
-
-            if let Some(progress) = self.player_state.progress() {
-                egui::ProgressBar::new(progress).ui(ui);
-                ctx.request_repaint_after(Duration::from_millis(10));
+            if player_response.finished {
+                // TODO: Not if image.
+                load_next_file = true;
             }
         });
+
+        if load_next_file && let Some(pipeline) = self.queue.lock().pop_front() {
+            if let Err(error) = pipeline.set_state(gstreamer::State::Playing) {
+                self.error = Some(error);
+                return;
+            }
+            self.player.swap_pipeline(pipeline);
+        }
+
+        ctx.request_repaint();
     }
 }
 
-fn file_feeder(
+fn queue_loop(
     ctx: egui::Context,
-    file_tx: flume::Sender<Result<MediaFile, String>>,
-    mut files: RandomFiles,
+    queue: Weak<Mutex<VecDeque<Pipeline>>>,
+    pipeline_rx: flume::Receiver<Pipeline>,
 ) {
     loop {
-        if file_tx.is_disconnected() {
+        let Some(queue) = queue.upgrade() else {
+            eprintln!("Queue dropped, stopping queue loop");
+            break;
+        };
+
+        let Ok(pipeline) = pipeline_rx.recv() else {
+            eprintln!("Pipeline rx disconnected, stopping queue loop");
+            break;
+        };
+
+        while queue.lock().len() >= MAX_QUEUE_SIZE {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        queue.lock().push_back(pipeline);
+
+        {
+            let mut queue_lock = queue.lock();
+            for pipeline in pipeline_rx.try_iter() {
+                let path = pipeline.path();
+                println!("Queueing {}", path.display());
+
+                queue_lock.push_back(pipeline);
+                if queue_lock.len() >= MAX_QUEUE_SIZE {
+                    break;
+                }
+            }
+        }
+
+        ctx.request_repaint();
+    }
+}
+
+fn pre_roll_loop(pipeline_rx: flume::Receiver<Pipeline>, pipeline_tx: flume::Sender<Pipeline>) {
+    let mut queue = VecDeque::<Pipeline>::with_capacity(MAX_PRE_ROLL_QUEUE_SIZE);
+    'main: loop {
+        if pipeline_tx.is_disconnected() {
+            eprintln!("Pipeline tx disconnected, stopping pre-roll loop");
             break;
         }
 
-        let Some(path) = files.next() else {
-            _ = file_tx.send(Err("No files found".to_string()));
-            ctx.request_repaint();
+        let queue_len = queue.len();
+        if queue_len != 0 {
+            'pre_roll: for _ in 0..queue_len {
+                let pipeline = queue.pop_front().unwrap();
+                let path = pipeline.path();
+
+                let mut is_paused = pipeline.state() == gstreamer::State::Paused;
+
+                let event_rx = pipeline.event_rx();
+                let timeout = std::time::Duration::from_millis(100);
+
+                let iter = event_rx.recv_timeout(timeout).into_iter().chain(event_rx.try_iter());
+                for event in iter {
+                    match event {
+                        Event::Error(error) => {
+                            eprintln!("Error on player for {path:?}: {error}");
+                            continue 'pre_roll;
+                        }
+                        Event::StateChanged { from: _, to: gstreamer::State::Ready } => (),
+                        Event::StateChanged { from: _, to: gstreamer::State::Paused } => {
+                            is_paused = true;
+                        }
+                        event => eprintln!("Unhandled event on player for {path:?} - {event:?}"),
+                    }
+                }
+
+                if is_paused {
+                    if pipeline_tx.send(pipeline).is_err() {
+                        eprintln!("Pipeline tx disconnected, stopping pre-roll loop");
+                        break 'main;
+                    }
+                } else {
+                    queue.push_back(pipeline);
+                }
+            }
+        }
+
+        if queue.len() >= MAX_PRE_ROLL_QUEUE_SIZE {
+            continue;
+        }
+
+        let timeout = std::time::Duration::from_millis(100);
+        let pipeline = match pipeline_rx.recv_timeout(timeout) {
+            Ok(pipeline) => pipeline,
+            Err(flume::RecvTimeoutError::Timeout) => continue,
+            Err(flume::RecvTimeoutError::Disconnected) => {
+                eprintln!("Pipeline rx disconnected, stopping pre-roll loop");
+                break;
+            }
+        };
+        queue.push_back(pipeline);
+
+        for pipeline in pipeline_rx.try_iter() {
+            queue.push_back(pipeline);
+            if queue.len() == MAX_PRE_ROLL_QUEUE_SIZE {
+                break;
+            }
+        }
+    }
+}
+
+fn pipeline_loop(
+    ctx: egui::Context,
+    files: Arc<Mutex<RandomFiles>>,
+    pipeline_tx: flume::Sender<Pipeline>,
+) {
+    loop {
+        if pipeline_tx.is_disconnected() {
+            eprintln!("Pipeline tx disconnected, stopping pipeline loop");
+            break;
+        }
+
+        let Some(path) = files.lock().next() else {
+            eprintln!("No files found, stopping pre-roll loop");
             break;
         };
 
         match MediaType::detect(&path) {
             Ok(MediaType::Unknown) => {
                 eprintln!("Unknown media type for {path:?}");
+                continue;
             }
             Ok(media_type) => {
-                _ = file_tx.send(Ok(MediaFile { path, media_type }));
-                ctx.request_repaint();
+                println!("Loading {path:?} as {media_type:?}");
+                let pipeline = match Pipeline::new(path.clone(), media_type, ctx.clone()) {
+                    Ok(pipeline) => pipeline,
+                    Err(error) => {
+                        eprintln!("Failed to set path for {}: {error}", path.display());
+                        continue;
+                    }
+                };
+
+                if let Err(error) = pipeline.set_state(gstreamer::State::Paused) {
+                    eprintln!("Failed to set state for {}: {error}", path.display());
+                    continue;
+                }
+
+                if pipeline_tx.send(pipeline).is_err() {
+                    eprintln!("Pipeline tx disconnected, stopping pipeline loop");
+                    break;
+                }
             }
-            Err(error) => eprintln!("Error detecting media type: {error}"),
+            Err(error) => {
+                eprintln!("Error detecting media type: {error}");
+            }
         }
     }
+}
+
+fn start_file_feeder(
+    ctx: &egui::Context,
+    queue: Weak<Mutex<VecDeque<Pipeline>>>,
+    files: Arc<Mutex<RandomFiles>>,
+) {
+    eprintln!("Starting file feeder");
+
+    let (initial_pipeline_tx, initial_pipeline_rx) = flume::bounded(MAX_PRE_ROLL_QUEUE_SIZE);
+    let ctx_clone = ctx.clone();
+    std::thread::spawn(move || pipeline_loop(ctx_clone, files, initial_pipeline_tx));
+
+    let (pipeline_tx, pipeline_rx) = flume::bounded(MAX_PRE_ROLL_QUEUE_SIZE);
+
+    std::thread::spawn(move || pre_roll_loop(initial_pipeline_rx, pipeline_tx));
+
+    let ctx_clone = ctx.clone();
+    std::thread::spawn(move || queue_loop(ctx_clone, queue, pipeline_rx));
 }

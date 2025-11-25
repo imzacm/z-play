@@ -4,22 +4,21 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+thiserror = "2.0"
 rand = "0.9"
 rayon = "1.11"
 jwalk = "0.8"
 
 flume = "0.11"
+parking_lot = "0.12"
 
-ffmpeg-next = "8.0"
+ffmpeg-next = "8"
+
+glib = "0.21"
+gstreamer = "0.24"
+gstreamer-app = "0.24"
+gstreamer-video = "0.24"
 
 eframe = "0.33"
-egui_extras = { version = "0.33", features = ["file", "http", "image", "gif", "webp"] }
-image = { version = "0.25", features = ["default", "rayon"] }
 
-# egui-video = { path = "../egui-video" }
-egui-video = { git = "https://github.com/imzacm/egui-video.git", rev = "8bafa697023897b843140c5a1f2aa4bc3e2461cf" }
-
-# egui_player = { path = "../egui_player" }
-egui_player = { git = "https://github.com/imzacm/egui_player.git", rev = "cf34daa018c5a06ded19de3a71ad6deb3689e14a" }
-
-rfd = "0.15"
+rfd = "0.16"
