@@ -37,6 +37,12 @@ impl PlayerUi {
         std::mem::replace(&mut self.pipeline, pipeline.into())
     }
 
+    pub fn clear(&mut self) {
+        self.texture = None;
+        self.pipeline = None;
+        self.audio_queue_input.clear();
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Response {
         let mut response = Response { finished: false, error: None };
 
@@ -148,6 +154,8 @@ impl PlayerUi {
                             if let Err(error) = pipeline.seek(target) {
                                 response.error = Some(error);
                             }
+
+                            self.audio_queue_input.clear();
                         }
                     }
                 });
@@ -178,14 +186,19 @@ impl PlayerUi {
             });
         });
 
+        // TODO: Play on video does nothing.
+        // Seek and then play works.
         if toggle_play_pause {
             if pipeline.state() == gstreamer::State::Playing {
                 if let Err(error) = pipeline.set_state(gstreamer::State::Paused) {
-                    log::info!("Error pausing player: {error}");
+                    log::error!("Error pausing player: {error}");
                     response.error = Some(error);
                 }
+
+                // TODO: Find a way to pause audio.
+                self.audio_queue_input.clear();
             } else if let Err(error) = pipeline.set_state(gstreamer::State::Playing) {
-                log::info!("Error playing player: {error}");
+                log::error!("Error playing player: {error}");
                 response.error = Some(error);
             }
         }

@@ -56,7 +56,7 @@ impl Pipeline {
 
         let state = Arc::new(Mutex::new(State::default()));
         let pipeline = create_pipeline(path, media_type, ctx, state.clone())?;
-        let (event_tx, event_rx) = flume::bounded(10);
+        let (event_tx, event_rx) = flume::unbounded();
 
         let bus = pipeline.bus().unwrap();
         let bus_id = BusId::new();

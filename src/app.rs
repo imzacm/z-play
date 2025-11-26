@@ -11,8 +11,8 @@ use crate::media_type::MediaType;
 use crate::random_files::RandomFiles;
 use crate::{Error, ui};
 
-const MAX_QUEUE_SIZE: usize = 50;
-const MAX_PRE_ROLL_QUEUE_SIZE: usize = 20;
+const MAX_QUEUE_SIZE: usize = 20;
+const MAX_PRE_ROLL_QUEUE_SIZE: usize = 10;
 
 pub struct App {
     root_paths: Vec<PathBuf>,
@@ -115,6 +115,7 @@ impl eframe::App for App {
                 self.error = Some(error);
                 return;
             }
+            self.player.clear();
             self.player.swap_pipeline(pipeline);
         }
 
@@ -185,7 +186,7 @@ fn pre_roll_loop(pipeline_rx: flume::Receiver<Pipeline>, pipeline_tx: flume::Sen
                 for event in iter {
                     match event {
                         Event::Error(error) => {
-                            log::info!("Error on player for {path:?}: {error}");
+                            log::error!("Error on player for {path:?}: {error}");
                             continue 'pre_roll;
                         }
                         Event::StateChanged { from: _, to: gstreamer::State::Ready } => (),
@@ -273,7 +274,7 @@ fn pipeline_loop(
                 }
             }
             Err(error) => {
-                log::info!("Error detecting media type: {error}");
+                log::warn!("Error detecting media type: {error}");
             }
         }
     }
