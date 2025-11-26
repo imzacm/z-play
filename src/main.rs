@@ -6,7 +6,10 @@ use eframe::egui;
 use z_play_rs::app::App;
 
 fn main() -> eframe::Result {
-    log::set_max_level(log::LevelFilter::Info);
+    if std::env::var_os("RUST_LOG").is_none() {
+        unsafe { std::env::set_var("RUST_LOG", "info") };
+    }
+    env_logger::init();
 
     let args = std::env::args_os().skip(1);
     let root_dirs = args.map(PathBuf::from).collect::<Vec<_>>();

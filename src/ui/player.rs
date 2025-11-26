@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use eframe::egui;
 use eframe::egui::Widget;
 
@@ -10,13 +12,19 @@ pub struct Response {
     pub error: Option<Error>,
 }
 
-#[derive(Default)]
 pub struct PlayerUi {
     pipeline: Option<Pipeline>,
     texture: Option<egui::TextureHandle>,
+    audio_queue_input: Arc<rodio::queue::SourcesQueueInput>,
 }
 
 impl PlayerUi {
+    pub fn new() -> (Self, rodio::queue::SourcesQueueOutput) {
+        let (audio_queue_input, audio_queue_output) = rodio::queue::queue(true);
+        let player = Self { pipeline: None, texture: None, audio_queue_input };
+        (player, audio_queue_output)
+    }
+
     pub fn pipeline(&self) -> Option<&Pipeline> {
         self.pipeline.as_ref()
     }
@@ -47,7 +55,10 @@ impl PlayerUi {
                     }
                     Event::StateChanged { from, to } => {
                         // TODO: Play/pause text.
-                        log::info!("Pipeline state changed {} - {from:?} -> {to:?}", path.display());
+                        log::info!(
+                            "Pipeline state changed {} - {from:?} -> {to:?}",
+                            path.display()
+                        );
                     }
                 }
             }
@@ -64,6 +75,12 @@ impl PlayerUi {
             );
             let texture = ui.ctx().load_texture("video-frame", image, egui::TextureOptions::LINEAR);
             self.texture = Some(texture);
+        }
+
+        let audio_samples = pipeline.take_audio_buffer();
+        if !audio_samples.is_empty() {
+            let buffer = rodio::buffer::SamplesBuffer::new(2, 48000, audio_samples);
+            self.audio_queue_input.append(buffer);
         }
 
         let duration = pipeline.duration();

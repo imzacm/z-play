@@ -4,7 +4,7 @@ use std::sync::Arc;
 use glib::object::{Cast, ObjectExt};
 use gstreamer::MessageView;
 use gstreamer::prelude::{
-    ElementExt, ElementExtManual, GstBinExt, GstBinExtManual, GstObjectExt, PadExt, PadExtManual,
+    ElementExt, ElementExtManual, GstBinExt, GstBinExtManual, GstObjectExt, PadExt,
 };
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
 
@@ -29,6 +29,7 @@ pub struct Frame {
 #[derive(Default, Clone)]
 struct State {
     frame: Option<Frame>,
+    audio_buffer: Vec<f32>,
     duration: gstreamer::ClockTime,
     position: gstreamer::ClockTime,
 }
@@ -81,6 +82,11 @@ impl Pipeline {
         MutexGuard::map(lock, |state| &mut state.frame)
     }
 
+    pub fn take_audio_buffer(&self) -> Vec<f32> {
+        let mut lock = self.state.lock();
+        std::mem::take(&mut lock.audio_buffer)
+    }
+
     pub fn duration(&self) -> gstreamer::ClockTime {
         self.state.lock().duration
     }
@@ -131,7 +137,7 @@ fn create_pipeline(
     file_src.link(&decode_bin)?;
 
     let (video_bin, video_app_sink) = create_video_bin()?;
-    let audio_bin = create_audio_bin()?;
+    let (audio_bin, audio_app_sink) = create_audio_bin()?;
 
     let mut video_sink_pad = video_bin.static_pad("sink").unwrap();
 
@@ -191,26 +197,29 @@ fn create_pipeline(
             if !video_sink_pad.is_linked()
                 && let Err(error) = src_pad.link(&video_sink_pad)
             {
-                log::info!("Failed to link video pad: {error}");
+                log::error!("Failed to link video pad: {error}");
             }
         } else if pad_name.starts_with("audio_") {
             let Some(audio_sink_pad) = audio_sink_pad_weak.upgrade() else { return };
             if !audio_sink_pad.is_linked()
                 && let Err(error) = src_pad.link(&audio_sink_pad)
             {
-                log::info!("Failed to link audio pad: {error}");
+                log::error!("Failed to link audio pad: {error}");
             }
         } else {
             log::info!("Unknown pad type: {pad_name}");
         }
     });
 
+    let ctx_clone = ctx.clone();
     let pipeline_weak = pipeline.downgrade();
     let state_clone = state.clone();
     video_app_sink.set_callbacks(
         gstreamer_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
+                let ctx = &ctx_clone;
                 let state = &state_clone;
+
                 let sample = sink.pull_sample().map_err(|_| gstreamer::FlowError::Eos)?;
                 let buffer = sample.buffer().ok_or(gstreamer::FlowError::Error)?;
                 let caps = sample.caps().ok_or(gstreamer::FlowError::Error)?;
@@ -235,37 +244,57 @@ fn create_pipeline(
                         }
                     }
 
-                    if let Some(pts) = buffer.pts() {
+                    if let Some(pts) = buffer.pts()
+                        && state_lock.position < pts
+                    {
                         state_lock.position = pts;
                     }
                 }
 
                 ctx.request_repaint();
-
                 Ok(gstreamer::FlowSuccess::Ok)
             })
             .build(),
     );
 
     let pipeline_weak = pipeline.downgrade();
-    audio_sink_pad.add_probe(gstreamer::PadProbeType::BUFFER, move |_pad, info| {
-        if let Some(buffer) = info.buffer() {
-            let mut state_lock = state.lock();
+    let state_clone = state.clone();
+    audio_app_sink.set_callbacks(
+        gstreamer_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                let state = &state_clone;
 
-            if state_lock.duration == gstreamer::ClockTime::ZERO
-                && let Some(pipeline) = pipeline_weak.upgrade()
-                && let Some(duration) = pipeline.query_duration::<gstreamer::ClockTime>()
-            {
-                state_lock.duration = duration;
-            }
+                let sample = sink.pull_sample().map_err(|_| gstreamer::FlowError::Eos)?;
+                let buffer = sample.buffer().ok_or(gstreamer::FlowError::Error)?;
+                let map = buffer.map_readable().map_err(|_| gstreamer::FlowError::Error)?;
 
-            if let Some(pts) = buffer.pts() {
-                state_lock.position = pts;
-            }
-        }
+                let slice = map.as_slice();
+                let (prefix, samples, suffix) = unsafe { slice.align_to::<f32>() };
+                assert!(prefix.is_empty() && suffix.is_empty());
 
-        gstreamer::PadProbeReturn::Ok
-    });
+                {
+                    let mut state_lock = state.lock();
+                    state_lock.audio_buffer.extend_from_slice(samples);
+
+                    if state_lock.duration == gstreamer::ClockTime::ZERO
+                        && let Some(pipeline) = pipeline_weak.upgrade()
+                        && let Some(duration) = pipeline.query_duration::<gstreamer::ClockTime>()
+                    {
+                        state_lock.duration = duration;
+                    }
+
+                    if let Some(pts) = buffer.pts()
+                        && state_lock.position < pts
+                    {
+                        state_lock.position = pts;
+                    }
+                }
+
+                ctx.request_repaint();
+                Ok(gstreamer::FlowSuccess::Ok)
+            })
+            .build(),
+    );
 
     Ok(pipeline)
 }
@@ -295,21 +324,33 @@ fn create_video_bin() -> Result<(gstreamer::Bin, gstreamer_app::AppSink), Error>
     Ok((bin, app_sink))
 }
 
-fn create_audio_bin() -> Result<gstreamer::Bin, Error> {
+fn create_audio_bin() -> Result<(gstreamer::Bin, gstreamer_app::AppSink), Error> {
     let bin = gstreamer::Bin::builder().name("audio_bin").build();
 
-    let convert = gstreamer::ElementFactory::make("audioconvert").build()?;
+    let convert_in = gstreamer::ElementFactory::make("audioconvert").build()?;
+    let rate = gstreamer::ElementFactory::make("audiorate").build()?;
     let resample = gstreamer::ElementFactory::make("audioresample").build()?;
-    let sink = gstreamer::ElementFactory::make("autoaudiosink").build()?;
 
-    bin.add_many([&convert, &resample, &sink])?;
-    gstreamer::Element::link_many([&convert, &resample, &sink])?;
+    let app_sink = gstreamer_app::AppSink::builder()
+        .sync(false)
+        .caps(
+            &gstreamer::Caps::builder("audio/x-raw")
+                .field("format", gstreamer_audio::AudioFormat::F32le.to_str())
+                .field("layout", "interleaved")
+                .field("rate", 48000)
+                .field("channels", 2)
+                .build(),
+        )
+        .build();
 
-    let sink_pad = convert.static_pad("sink").expect("no audioconvert sink pad");
+    bin.add_many([&convert_in, &rate, &resample, app_sink.upcast_ref()])?;
+    gstreamer::Element::link_many([&convert_in, &rate, &resample, app_sink.upcast_ref()])?;
+
+    let sink_pad = convert_in.static_pad("sink").expect("no audioconvert sink pad");
     let ghost_pad = gstreamer::GhostPad::with_target(&sink_pad)?;
     bin.add_pad(&ghost_pad)?;
 
-    Ok(bin)
+    Ok((bin, app_sink))
 }
 
 fn run_pipeline(

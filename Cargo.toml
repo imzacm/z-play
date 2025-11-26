@@ -8,6 +8,7 @@ crate-type = ["lib", "cdylib"]
 
 [dependencies]
 log = "0.4"
+env_logger = "0.11"
 
 thiserror = "2.0"
 rand = "0.9"
@@ -21,7 +22,10 @@ glib = "0.21"
 gstreamer = "0.24"
 gstreamer-app = "0.24"
 gstreamer-video = "0.24"
+gstreamer-audio = "0.24"
 gstreamer-pbutils = "0.24"
+
+rodio = "0.21"
 
 eframe = "0.33"
 
