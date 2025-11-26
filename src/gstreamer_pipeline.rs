@@ -1,9 +1,5 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use glib::object::{Cast, ObjectExt};
 use gstreamer::MessageView;
@@ -43,7 +39,7 @@ pub struct Pipeline {
     state: Arc<Mutex<State>>,
     media_type: MediaType,
     event_rx: flume::Receiver<Event>,
-    bus_id: BusId,
+    loop_: glib::MainLoop,
 }
 
 impl Pipeline {
@@ -58,11 +54,14 @@ impl Pipeline {
         let pipeline = create_pipeline(path, media_type, ctx, state.clone())?;
         let (event_tx, event_rx) = flume::bounded(10);
 
+        let context = glib::MainContext::new();
+        let loop_ = glib::MainLoop::new(Some(&context), false);
         let bus = pipeline.bus().unwrap();
-        let bus_id = BusId::new();
-        send_worker_command(WorkerCommand::AddBus(bus_id, bus, event_tx));
 
-        Ok(Self { pipeline, state, media_type, event_rx, bus_id })
+        let loop_clone = loop_.clone();
+        std::thread::spawn(move || run_pipeline(loop_clone, bus, event_tx, false));
+
+        Ok(Self { pipeline, state, media_type, event_rx, loop_ })
     }
 
     pub fn media_type(&self) -> MediaType {
@@ -115,7 +114,7 @@ impl Pipeline {
 impl Drop for Pipeline {
     fn drop(&mut self) {
         _ = self.pipeline.set_state(gstreamer::State::Null);
-        send_worker_command(WorkerCommand::RemoveBus(self.bus_id));
+        self.loop_.quit();
     }
 }
 
@@ -211,10 +210,6 @@ fn create_pipeline(
             log::info!("Unknown pad type: {pad_name}");
         }
     });
-
-    // TODO: Always link add image and audio elements
-    // TODO: Use no-more-pads to remove image and audio if not present
-    // TODO: Remove need for media_type
 
     let ctx_clone = ctx.clone();
     let pipeline_weak = pipeline.downgrade();
@@ -358,104 +353,61 @@ fn create_audio_bin() -> Result<(gstreamer::Bin, gstreamer_app::AppSink), Error>
     Ok((bin, app_sink))
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-struct BusId(u64);
-
-impl BusId {
-    fn new() -> Self {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-
-        Self(NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
-    }
-}
-
-enum WorkerCommand {
-    AddBus(BusId, gstreamer::Bus, flume::Sender<Event>),
-    RemoveBus(BusId),
-}
-
-// Note: The worker thread will never end because `SENDER` is static.
-fn send_worker_command(command: WorkerCommand) {
-    static SENDER: LazyLock<flume::Sender<WorkerCommand>> = LazyLock::new(|| {
-        let (sender, receiver) = flume::unbounded();
-        std::thread::spawn(move || worker_thread(receiver));
-        sender
-    });
-
-    SENDER.send(command).unwrap();
-}
-
-fn worker_thread(command_rx: flume::Receiver<WorkerCommand>) {
-    let context = glib::MainContext::new();
-    context.spawn_local(async move {
-        let map = Rc::new(RefCell::new(HashMap::new()));
-
-        loop {
-            let map_weak = Rc::downgrade(&map);
-            match command_rx.recv_async().await {
-                Ok(WorkerCommand::AddBus(id, bus, event_tx)) => {
-                    let guard = bus
-                        .add_watch_local(move |_bus, msg| {
-                            let mut remove_guard = false;
-                            match msg.view() {
-                                MessageView::Eos(_) => {
-                                    if event_tx.send(Event::EndOfStream).is_err() {
-                                        remove_guard = true;
-                                    }
-                                }
-                                MessageView::Error(error) => {
-                                    let error = format!(
-                                        "Error on pipeline: {} (debug: {:?})",
-                                        error.error(),
-                                        error.debug()
-                                    );
-                                    if event_tx.send(Event::Error(error)).is_err() {
-                                        remove_guard = true;
-                                    }
-                                }
-                                // We only care about pipeline state changes.
-                                MessageView::StateChanged(state) => {
-                                    let is_pipeline = state
-                                        .src()
-                                        .is_some_and(|src| src.is::<gstreamer::Pipeline>());
-
-                                    let from = state.old();
-                                    let to = state.current();
-
-                                    if is_pipeline
-                                        && event_tx.send(Event::StateChanged { from, to }).is_err()
-                                    {
-                                        remove_guard = true;
-                                    }
-                                }
-                                _ => (),
-                            }
-
-                            if remove_guard {
-                                if let Some(map) = map_weak.upgrade() {
-                                    map.borrow_mut().remove(&id);
-                                }
-                                glib::ControlFlow::Break
-                            } else {
-                                glib::ControlFlow::Continue
-                            }
-                        })
-                        .expect("Failed to add bus watch");
-
-                    map.borrow_mut().insert(id, guard);
-                }
-                Ok(WorkerCommand::RemoveBus(id)) => {
-                    map.borrow_mut().remove(&id);
-                }
-                Err(flume::RecvError::Disconnected) => break,
-            }
-        }
-    });
-
-    let loop_ = glib::MainLoop::new(Some(&context), false);
+fn run_pipeline(
+    loop_: glib::MainLoop,
+    bus: gstreamer::Bus,
+    event_tx: flume::Sender<Event>,
+    print_messages: bool,
+) {
+    let context = loop_.context();
     context
-        .with_thread_default(move || {
-            loop_.run();
+        .with_thread_default(|| {
+            let loop_clone = loop_.clone();
+
+            let _bus_watch = bus
+                .add_watch_local(move |_, msg| {
+                    if print_messages {
+                        log::info!("Message: {msg:?}");
+                    }
+
+                    match msg.view() {
+                        MessageView::Eos(_) => {
+                            if event_tx.send(Event::EndOfStream).is_err() {
+                                loop_.quit();
+                            }
+                        }
+                        MessageView::Error(error) => {
+                            let error = format!(
+                                "Error on pipeline: {} (debug: {:?})",
+                                error.error(),
+                                error.debug()
+                            );
+                            if event_tx.send(Event::Error(error)).is_err() {
+                                loop_.quit();
+                            }
+                        }
+                        // We only care about pipeline state changes.
+                        MessageView::StateChanged(state) => {
+                            let is_pipeline =
+                                state.src().is_some_and(|src| src.is::<gstreamer::Pipeline>());
+
+                            let from = state.old();
+                            let to = state.current();
+
+                            if is_pipeline
+                                && event_tx.send(Event::StateChanged { from, to }).is_err()
+                            {
+                                loop_.quit();
+                            }
+                        }
+                        _ => (),
+                    }
+
+                    glib::ControlFlow::Continue
+                })
+                .expect("Failed to add bus watch");
+
+            loop_clone.run();
         })
         .unwrap();
 }
