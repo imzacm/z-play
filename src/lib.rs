@@ -22,4 +22,7 @@ pub enum Error {
     GlibBool(#[from] glib::BoolError),
     #[error(transparent)]
     StateChange(#[from] gstreamer::StateChangeError),
+
+    #[error(transparent)]
+    RodioStream(#[from] rodio::StreamError),
 }

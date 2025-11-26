@@ -20,6 +20,7 @@ pub struct App {
     error: Option<Error>,
     queue: Arc<Mutex<VecDeque<Pipeline>>>,
     files: Arc<Mutex<RandomFiles>>,
+    audio_output: Option<rodio::OutputStream>,
 }
 
 impl App {
@@ -29,12 +30,29 @@ impl App {
     {
         let root_paths = root_paths.into_iter().map(Into::into).collect();
         let files = RandomFiles::new(&root_paths);
+
+        let mut error = None;
+
+        let audio_output = match rodio::OutputStreamBuilder::open_default_stream() {
+            Ok(audio_output) => Some(audio_output),
+            Err(e) => {
+                error = Some(e.into());
+                None
+            }
+        };
+
+        let (player, player_audio) = ui::PlayerUi::new();
+        if let Some(audio_output) = &audio_output {
+            audio_output.mixer().add(player_audio);
+        }
+
         Self {
             root_paths,
-            player: ui::PlayerUi::default(),
-            error: None,
+            player,
+            error,
             queue: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_QUEUE_SIZE))),
             files: Arc::new(Mutex::new(files)),
+            audio_output,
         }
     }
 }
@@ -239,13 +257,13 @@ fn pipeline_loop(
                 let pipeline = match Pipeline::new(path.clone(), media_type, ctx.clone()) {
                     Ok(pipeline) => pipeline,
                     Err(error) => {
-                        log::info!("Failed to set path for {}: {error}", path.display());
+                        log::error!("Failed to set path for {}: {error}", path.display());
                         continue;
                     }
                 };
 
                 if let Err(error) = pipeline.set_state(gstreamer::State::Paused) {
-                    log::info!("Failed to set state for {}: {error}", path.display());
+                    log::error!("Failed to set state for {}: {error}", path.display());
                     continue;
                 }
 
