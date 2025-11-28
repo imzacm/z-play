@@ -22,7 +22,6 @@ glib = "0.21"
 gstreamer = "0.24"
 gstreamer-app = "0.24"
 gstreamer-video = "0.24"
-gstreamer-audio = "0.24"
 gstreamer-pbutils = "0.24"
 
 eframe = "0.33"
