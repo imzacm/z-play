@@ -20,6 +20,7 @@ pub struct App {
     error: Option<Error>,
     queue: Arc<Mutex<VecDeque<Pipeline>>>,
     files: Arc<Mutex<RandomFiles>>,
+    fullscreen: bool,
 }
 
 impl App {
@@ -36,6 +37,7 @@ impl App {
             error: None,
             queue: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_QUEUE_SIZE))),
             files: Arc::new(Mutex::new(files)),
+            fullscreen: false,
         }
     }
 }
@@ -51,22 +53,22 @@ impl eframe::App for App {
         let mut load_next_file = self.player.pipeline().is_none();
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Z-Play");
+            if !self.fullscreen {
+                let roots_response = ui::roots_ui(ui, &mut self.root_paths);
+                if roots_response.changed {
+                    *self.files.lock() = RandomFiles::new(&self.root_paths);
 
-            let roots_response = ui::roots_ui(ui, &mut self.root_paths);
-            if roots_response.changed {
-                *self.files.lock() = RandomFiles::new(&self.root_paths);
+                    let mut queue_lock = self.queue.lock();
+                    queue_lock.retain(|pipeline| {
+                        let path = pipeline.path();
 
-                let mut queue_lock = self.queue.lock();
-                queue_lock.retain(|pipeline| {
-                    let path = pipeline.path();
+                        // Retain where root exists.
+                        self.root_paths.iter().any(|root| path.starts_with(root))
+                    });
+                }
 
-                    // Retain where root exists.
-                    self.root_paths.iter().any(|root| path.starts_with(root))
-                });
+                ui::queue_ui(ui, &mut self.queue.lock());
             }
-
-            ui::queue_ui(ui, &mut self.queue.lock());
 
             ui.horizontal(|ui| {
                 if let Some(error) = &self.error {
@@ -74,12 +76,30 @@ impl eframe::App for App {
                 }
             });
 
+            let mut toggle_fullscreen_button = if self.fullscreen {
+                ctx.input(|i| i.key_released(egui::Key::Escape) || i.key_released(egui::Key::F11))
+            } else {
+                ctx.input(|i| i.key_released(egui::Key::F11))
+            };
+
             ui.horizontal(|ui| {
                 let next_button = ui.button("Next");
                 if next_button.clicked() {
                     load_next_file = true;
                 }
+
+                let fullscreen_text = if self.fullscreen { "Exit fullscreen" } else { "Fullscreen" };
+                let fullscreen_button = ui.button(fullscreen_text);
+                if fullscreen_button.clicked() {
+                    toggle_fullscreen_button = true;
+                }
             });
+
+            if toggle_fullscreen_button {
+                self.fullscreen = !self.fullscreen;
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+                ui.ctx().request_repaint();
+            }
 
             let player_response = self.player.ui(ui);
             if let Some(error) = player_response.error {
