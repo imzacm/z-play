@@ -27,3 +27,5 @@ gstreamer-pbutils = "0.24"
 eframe = "0.33"
 
 rfd = "0.16"
+
+keepawake = "0.6"

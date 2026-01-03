@@ -31,6 +31,10 @@ impl PlayerUi {
         Ok(())
     }
 
+    pub fn is_playing(&self) -> bool {
+        self.pipeline.as_ref().is_some_and(|p| p.state() == gstreamer::State::Playing)
+    }
+
     pub fn pipeline(&self) -> Option<&Pipeline> {
         self.pipeline.as_ref()
     }

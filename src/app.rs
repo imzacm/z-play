@@ -4,6 +4,7 @@ use std::sync::{Arc, Weak};
 
 use eframe::egui;
 use glib::clone::Downgrade;
+use keepawake::KeepAwake;
 use parking_lot::Mutex;
 
 use crate::gstreamer_pipeline::{Event, Pipeline};
@@ -64,6 +65,7 @@ pub struct App {
     files: Arc<Mutex<RandomFiles>>,
     fullscreen: bool,
     playback_speed: PlaybackSpeed,
+    keep_awake: Option<KeepAwake>,
 }
 
 impl App {
@@ -82,6 +84,7 @@ impl App {
             files: Arc::new(Mutex::new(files)),
             fullscreen: false,
             playback_speed: PlaybackSpeed::default(),
+            keep_awake: None,
         }
     }
 }
@@ -183,6 +186,25 @@ impl eframe::App for App {
         }
 
         ctx.request_repaint();
+
+        let playing = self.player.is_playing();
+        if playing && self.keep_awake.is_none() {
+            let keep_awake_result = keepawake::Builder::default()
+                .display(true)
+                .reason("Video playback")
+                .app_name("Z-Play")
+                .app_reverse_domain("io.github.imzacm.z-play")
+                .create();
+
+            match keep_awake_result {
+                Ok(keep_awake) => self.keep_awake = Some(keep_awake),
+                Err(error) => {
+                    log::error!("Failed to create keep awake: {error}");
+                }
+            }
+        } else if !playing {
+            self.keep_awake = None;
+        }
     }
 }
 
