@@ -105,22 +105,22 @@ impl Pipeline {
         Ok(())
     }
 
-    pub fn seek(&self, time: gstreamer::ClockTime) -> Result<(), Error> {
-        self.pipeline
-            .seek_simple(gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE, time)?;
-        Ok(())
-    }
+    pub fn seek(&self, time: gstreamer::ClockTime, rate: Option<f64>) -> Result<(), Error> {
+        if let Some(rate) = rate {
+            self.pipeline.seek(
+                rate,
+                gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
+                gstreamer::SeekType::Set,
+                time,
+                gstreamer::SeekType::None,
+                gstreamer::ClockTime::ZERO,
+            )?;
 
-    pub fn set_playback_rate(&self, rate: f64) -> Result<(), Error> {
-        let position = self.position();
-        self.pipeline.seek(
-            rate,
-            gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
-            gstreamer::SeekType::Set,
-            position,
-            gstreamer::SeekType::None,
-            gstreamer::ClockTime::ZERO,
-        )?;
+            self.state.lock().position = time;
+        } else {
+            self.pipeline
+                .seek_simple(gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE, time)?;
+        }
         Ok(())
     }
 }

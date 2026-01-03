@@ -139,23 +139,21 @@ impl eframe::App for App {
                     toggle_fullscreen_button = true;
                 }
 
-                let mut selected = self.playback_speed;
                 egui::ComboBox::from_id_salt("playback_speed")
-                    .selected_text(selected.as_str())
+                    .selected_text(self.playback_speed.as_str())
                     .show_ui(ui, |ui| {
                         for speed in PlaybackSpeed::all() {
-                            ui.selectable_value(&mut selected, speed, speed.as_str());
+                            ui.selectable_value(&mut self.playback_speed, speed, speed.as_str());
                         }
                     });
-
-                if selected != self.playback_speed {
-                    self.playback_speed = selected;
-                    if let Err(error) = self.player.set_rate(self.playback_speed.rate()) {
-                        self.error = Some(error);
-                        ui.ctx().request_repaint();
-                    }
-                }
             });
+
+            if self.playback_speed.rate() != self.player.rate()
+                && let Err(error) = self.player.set_rate(self.playback_speed.rate())
+            {
+                self.error = Some(error);
+                ui.ctx().request_repaint();
+            }
 
             if toggle_fullscreen_button {
                 self.fullscreen = !self.fullscreen;
