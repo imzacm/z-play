@@ -14,6 +14,48 @@ use crate::{Error, ui};
 const MAX_QUEUE_SIZE: usize = 20;
 const MAX_PRE_ROLL_QUEUE_SIZE: usize = 10;
 
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Ord, PartialOrd)]
+enum PlaybackSpeed {
+    X0_5,
+    #[default]
+    X1,
+    X2,
+    X4,
+    X8,
+    X16,
+    X32,
+}
+
+impl PlaybackSpeed {
+    pub fn all() -> impl IntoIterator<Item = Self> {
+        [Self::X0_5, Self::X1, Self::X2, Self::X4, Self::X8, Self::X16, Self::X32]
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PlaybackSpeed::X0_5 => "x0.5",
+            PlaybackSpeed::X1 => "x1",
+            PlaybackSpeed::X2 => "x2",
+            PlaybackSpeed::X4 => "x4",
+            PlaybackSpeed::X8 => "x8",
+            PlaybackSpeed::X16 => "x16",
+            PlaybackSpeed::X32 => "x32",
+        }
+    }
+
+    pub fn rate(&self) -> f64 {
+        match self {
+            PlaybackSpeed::X0_5 => 0.5,
+            PlaybackSpeed::X1 => 1.0,
+            PlaybackSpeed::X2 => 2.0,
+            PlaybackSpeed::X4 => 4.0,
+            PlaybackSpeed::X8 => 8.0,
+            PlaybackSpeed::X16 => 16.0,
+            PlaybackSpeed::X32 => 32.0,
+        }
+    }
+}
+
 pub struct App {
     root_paths: Vec<PathBuf>,
     player: ui::PlayerUi,
@@ -21,6 +63,7 @@ pub struct App {
     queue: Arc<Mutex<VecDeque<Pipeline>>>,
     files: Arc<Mutex<RandomFiles>>,
     fullscreen: bool,
+    playback_speed: PlaybackSpeed,
 }
 
 impl App {
@@ -38,6 +81,7 @@ impl App {
             queue: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_QUEUE_SIZE))),
             files: Arc::new(Mutex::new(files)),
             fullscreen: false,
+            playback_speed: PlaybackSpeed::default(),
         }
     }
 }
@@ -88,10 +132,28 @@ impl eframe::App for App {
                     load_next_file = true;
                 }
 
-                let fullscreen_text = if self.fullscreen { "Exit fullscreen" } else { "Fullscreen" };
+                let fullscreen_text =
+                    if self.fullscreen { "Exit fullscreen" } else { "Fullscreen" };
                 let fullscreen_button = ui.button(fullscreen_text);
                 if fullscreen_button.clicked() {
                     toggle_fullscreen_button = true;
+                }
+
+                let mut selected = self.playback_speed;
+                egui::ComboBox::from_id_salt("playback_speed")
+                    .selected_text(selected.as_str())
+                    .show_ui(ui, |ui| {
+                        for speed in PlaybackSpeed::all() {
+                            ui.selectable_value(&mut selected, speed, speed.as_str());
+                        }
+                    });
+
+                if selected != self.playback_speed {
+                    self.playback_speed = selected;
+                    if let Err(error) = self.player.set_rate(self.playback_speed.rate()) {
+                        self.error = Some(error);
+                        ui.ctx().request_repaint();
+                    }
                 }
             });
 

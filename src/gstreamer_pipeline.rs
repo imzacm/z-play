@@ -110,6 +110,19 @@ impl Pipeline {
             .seek_simple(gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE, time)?;
         Ok(())
     }
+
+    pub fn set_playback_rate(&self, rate: f64) -> Result<(), Error> {
+        let position = self.position();
+        self.pipeline.seek(
+            rate,
+            gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
+            gstreamer::SeekType::Set,
+            position,
+            gstreamer::SeekType::None,
+            gstreamer::ClockTime::ZERO,
+        )?;
+        Ok(())
+    }
 }
 
 impl Drop for Pipeline {
@@ -294,12 +307,13 @@ fn create_audio_bin() -> Result<gstreamer::Bin, Error> {
     let bin = gstreamer::Bin::builder().name("audio_bin").build();
 
     let convert_in = gstreamer::ElementFactory::make("audioconvert").build()?;
+    let scale_tempo = gstreamer::ElementFactory::make("scaletempo").build()?;
     let rate = gstreamer::ElementFactory::make("audiorate").build()?;
     let resample = gstreamer::ElementFactory::make("audioresample").build()?;
     let sink = gstreamer::ElementFactory::make("autoaudiosink").build()?;
 
-    bin.add_many([&convert_in, &rate, &resample, &sink])?;
-    gstreamer::Element::link_many([&convert_in, &rate, &resample, &sink])?;
+    bin.add_many([&convert_in, &scale_tempo, &rate, &resample, &sink])?;
+    gstreamer::Element::link_many([&convert_in, &scale_tempo, &rate, &resample, &sink])?;
 
     let sink_pad = convert_in.static_pad("sink").expect("no audioconvert sink pad");
     let ghost_pad = gstreamer::GhostPad::with_target(&sink_pad)?;

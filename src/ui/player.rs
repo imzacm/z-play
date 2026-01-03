@@ -14,9 +14,22 @@ pub struct Response {
 pub struct PlayerUi {
     pipeline: Option<Pipeline>,
     texture: Option<egui::TextureHandle>,
+    rate: Option<f64>,
 }
 
 impl PlayerUi {
+    pub fn rate(&self) -> f64 {
+        self.rate.unwrap_or(1.0)
+    }
+
+    pub fn set_rate(&mut self, rate: f64) -> Result<(), Error> {
+        self.rate = Some(rate);
+        if let Some(pipeline) = &self.pipeline {
+            pipeline.set_playback_rate(self.rate())?;
+        }
+        Ok(())
+    }
+
     pub fn pipeline(&self) -> Option<&Pipeline> {
         self.pipeline.as_ref()
     }
@@ -26,7 +39,11 @@ impl PlayerUi {
         P: Into<Option<Pipeline>>,
     {
         self.texture = None;
-        std::mem::replace(&mut self.pipeline, pipeline.into())
+        let pipeline = pipeline.into();
+        if let Some(pipeline) = &pipeline {
+            pipeline.set_playback_rate(self.rate()).expect("Failed to set playback rate");
+        }
+        std::mem::replace(&mut self.pipeline, pipeline)
     }
 
     pub fn clear(&mut self) {
