@@ -2,52 +2,39 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rand::Rng;
-// use rand::seq::SliceRandom;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
-#[derive(Debug, Clone)]
-pub struct RandomFiles {
-    roots: Vec<PathBuf>,
+pub fn random_file<P>(roots: &[P]) -> Option<PathBuf>
+where
+    P: AsRef<Path> + Sync,
+{
+    random_file_with_timeout(roots, Duration::from_secs(1))
 }
 
-impl RandomFiles {
-    pub fn new<I>(root_dirs: I) -> Self
-    where
-        I: IntoIterator<Item: Into<PathBuf>>,
-    {
-        let roots: Vec<_> = root_dirs.into_iter().map(Into::into).collect();
-        Self { roots }
+pub fn random_file_with_timeout<P>(roots: &[P], timeout: Duration) -> Option<PathBuf>
+where
+    P: AsRef<Path> + Sync,
+{
+    let results = roots
+        .par_iter()
+        .map(|root| scan_root(root.as_ref(), timeout))
+        .collect::<Vec<_>>();
+
+    let total_files = results.iter().map(|r| r.count).sum();
+    if total_files == 0 {
+        return None;
     }
 
-    pub fn next_with_timeout(&mut self, timeout: Duration) -> Option<PathBuf> {
-        // self.roots.shuffle(&mut rand::rng());
-        let results =
-            self.roots.par_iter().map(|root| scan_root(root, timeout)).collect::<Vec<_>>();
-
-        let total_files = results.iter().map(|r| r.count).sum();
-        if total_files == 0 {
-            return None;
+    let mut rng = rand::rng();
+    let mut index = rng.random_range(0..total_files);
+    for result in results {
+        if index < result.count {
+            return result.selected;
         }
 
-        let mut rng = rand::rng();
-        let mut index = rng.random_range(0..total_files);
-        for result in results {
-            if index < result.count {
-                return result.selected;
-            }
-
-            index -= result.count;
-        }
-        None
+        index -= result.count;
     }
-}
-
-impl Iterator for RandomFiles {
-    type Item = PathBuf;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_with_timeout(Duration::from_secs(1))
-    }
+    None
 }
 
 struct ScanResult<T> {

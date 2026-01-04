@@ -8,60 +8,18 @@ use keepawake::KeepAwake;
 use parking_lot::Mutex;
 
 use crate::gstreamer_pipeline::{Event, Pipeline};
-use crate::random_files::RandomFiles;
+use crate::playback_speed::PlaybackSpeed;
+use crate::random_files::random_file;
 use crate::{Error, ui};
 
 const MAX_QUEUE_SIZE: usize = 20;
 const MAX_PRE_ROLL_QUEUE_SIZE: usize = 10;
 
-#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Ord, PartialOrd)]
-enum PlaybackSpeed {
-    X0_5,
-    #[default]
-    X1,
-    X2,
-    X4,
-    X8,
-    X16,
-    X32,
-}
-
-impl PlaybackSpeed {
-    pub fn all() -> impl IntoIterator<Item = Self> {
-        [Self::X0_5, Self::X1, Self::X2, Self::X4, Self::X8, Self::X16, Self::X32]
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            PlaybackSpeed::X0_5 => "x0.5",
-            PlaybackSpeed::X1 => "x1",
-            PlaybackSpeed::X2 => "x2",
-            PlaybackSpeed::X4 => "x4",
-            PlaybackSpeed::X8 => "x8",
-            PlaybackSpeed::X16 => "x16",
-            PlaybackSpeed::X32 => "x32",
-        }
-    }
-
-    pub fn rate(&self) -> f64 {
-        match self {
-            PlaybackSpeed::X0_5 => 0.5,
-            PlaybackSpeed::X1 => 1.0,
-            PlaybackSpeed::X2 => 2.0,
-            PlaybackSpeed::X4 => 4.0,
-            PlaybackSpeed::X8 => 8.0,
-            PlaybackSpeed::X16 => 16.0,
-            PlaybackSpeed::X32 => 32.0,
-        }
-    }
-}
-
 pub struct App {
-    root_paths: Vec<PathBuf>,
+    root_paths: Arc<Mutex<Vec<PathBuf>>>,
     player: ui::PlayerUi,
     error: Option<Error>,
     queue: Arc<Mutex<VecDeque<Pipeline>>>,
-    files: Arc<Mutex<RandomFiles>>,
     fullscreen: bool,
     playback_speed: PlaybackSpeed,
     keep_awake: Option<KeepAwake>,
@@ -73,14 +31,12 @@ impl App {
         I: IntoIterator<Item: Into<PathBuf>>,
     {
         let root_paths = root_paths.into_iter().map(Into::into).collect();
-        let files = RandomFiles::new(&root_paths);
 
         Self {
-            root_paths,
+            root_paths: Arc::new(Mutex::new(root_paths)),
             player: ui::PlayerUi::default(),
             error: None,
             queue: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_QUEUE_SIZE))),
-            files: Arc::new(Mutex::new(files)),
             fullscreen: false,
             playback_speed: PlaybackSpeed::default(),
             keep_awake: None,
@@ -92,24 +48,23 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if Arc::weak_count(&self.queue) == 0 {
             let queue = self.queue.downgrade();
-            let files = self.files.clone();
-            start_file_feeder(ctx, queue, files);
+            start_file_feeder(ctx, queue, self.root_paths.clone());
         }
 
         let mut load_next_file = self.player.pipeline().is_none();
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if !self.fullscreen {
-                let roots_response = ui::roots_ui(ui, &mut self.root_paths);
-                if roots_response.changed {
-                    *self.files.lock() = RandomFiles::new(&self.root_paths);
+                let mut root_paths = self.root_paths.lock();
+                let roots_response = ui::roots_ui(ui, &mut root_paths);
 
+                if roots_response.changed {
                     let mut queue_lock = self.queue.lock();
                     queue_lock.retain(|pipeline| {
                         let path = pipeline.path();
 
                         // Retain where root exists.
-                        self.root_paths.iter().any(|root| path.starts_with(root))
+                        root_paths.iter().any(|root| path.starts_with(root))
                     });
                 }
 
@@ -317,7 +272,7 @@ fn pre_roll_loop(pipeline_rx: flume::Receiver<Pipeline>, pipeline_tx: flume::Sen
 
 fn pipeline_loop(
     ctx: egui::Context,
-    files: Arc<Mutex<RandomFiles>>,
+    root_paths: Arc<Mutex<Vec<PathBuf>>>,
     pipeline_tx: flume::Sender<Pipeline>,
 ) {
     loop {
@@ -326,9 +281,15 @@ fn pipeline_loop(
             break;
         }
 
-        let Some(path) = files.lock().next() else {
-            log::info!("No files found, stopping pre-roll loop");
-            break;
+        let path = {
+            let root_paths = root_paths.lock();
+            match random_file(&root_paths) {
+                Some(path) => path,
+                None => {
+                    log::info!("No files found, stopping pre-roll loop");
+                    break;
+                }
+            }
         };
 
         println!("Loading {path:?}");
@@ -357,13 +318,13 @@ fn pipeline_loop(
 fn start_file_feeder(
     ctx: &egui::Context,
     queue: Weak<Mutex<VecDeque<Pipeline>>>,
-    files: Arc<Mutex<RandomFiles>>,
+    root_paths: Arc<Mutex<Vec<PathBuf>>>,
 ) {
     log::info!("Starting file feeder");
 
     let (initial_pipeline_tx, initial_pipeline_rx) = flume::bounded(MAX_PRE_ROLL_QUEUE_SIZE);
     let ctx_clone = ctx.clone();
-    std::thread::spawn(move || pipeline_loop(ctx_clone, files, initial_pipeline_tx));
+    std::thread::spawn(move || pipeline_loop(ctx_clone, root_paths, initial_pipeline_tx));
 
     let (pipeline_tx, pipeline_rx) = flume::bounded(MAX_PRE_ROLL_QUEUE_SIZE);
 
