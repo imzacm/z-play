@@ -47,15 +47,14 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    pub fn new(
-        path: PathBuf,
-        media_type: MediaType,
-        ctx: eframe::egui::Context,
-    ) -> Result<Self, Error> {
+    pub fn new<F>(path: PathBuf, media_type: MediaType, on_sample: F) -> Result<Self, Error>
+    where
+        F: FnMut() + Send + 'static,
+    {
         gstreamer::init().expect("Failed to initialize GStreamer");
 
         let state = Arc::new(Mutex::new(State::default()));
-        let pipeline = create_pipeline(path, media_type, ctx, state.clone())?;
+        let pipeline = create_pipeline(path, media_type, on_sample, state.clone())?;
         let (event_tx, event_rx) = flume::unbounded();
 
         let bus = pipeline.bus().unwrap();
@@ -132,12 +131,15 @@ impl Drop for Pipeline {
     }
 }
 
-fn create_pipeline(
+fn create_pipeline<F>(
     path: PathBuf,
     media_type: MediaType,
-    ctx: eframe::egui::Context,
+    mut on_sample: F,
     state: Arc<Mutex<State>>,
-) -> Result<gstreamer::Pipeline, Error> {
+) -> Result<gstreamer::Pipeline, Error>
+where
+    F: FnMut() + Send + 'static,
+{
     let pipeline = gstreamer::Pipeline::builder().name("player-pipeline").build();
 
     let file_src = gstreamer::ElementFactory::make("filesrc")
@@ -229,13 +231,11 @@ fn create_pipeline(
     // TODO: Use no-more-pads to remove image and audio if not present
     // TODO: Remove need for media_type
 
-    let ctx_clone = ctx.clone();
     let pipeline_weak = pipeline.downgrade();
     let state_clone = state.clone();
     video_app_sink.set_callbacks(
         gstreamer_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
-                let ctx = &ctx_clone;
                 let state = &state_clone;
 
                 let sample = sink.pull_sample().map_err(|_| gstreamer::FlowError::Eos)?;
@@ -269,7 +269,7 @@ fn create_pipeline(
                     }
                 }
 
-                ctx.request_repaint();
+                on_sample();
                 Ok(gstreamer::FlowSuccess::Ok)
             })
             .build(),
