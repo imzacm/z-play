@@ -19,8 +19,7 @@ impl RandomFiles {
         Self { roots }
     }
 
-    pub fn next_with_timeout(&mut self, timeout: Duration) -> Option<PathBuf> {
-        // self.roots.shuffle(&mut rand::rng());
+    pub fn next_with_timeout(&self, timeout: Duration) -> Option<PathBuf> {
         let results =
             self.roots.par_iter().map(|root| scan_root(root, timeout)).collect::<Vec<_>>();
 

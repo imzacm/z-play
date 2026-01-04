@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use eframe::egui;
 use glib::clone::Downgrade;
@@ -61,7 +62,7 @@ pub struct App {
     player: ui::PlayerUi,
     error: Option<Error>,
     queue: Arc<Mutex<VecDeque<Pipeline>>>,
-    files: Arc<Mutex<RandomFiles>>,
+    files: Arc<RandomFiles>,
     fullscreen: bool,
     playback_speed: PlaybackSpeed,
     keep_awake: Option<KeepAwake>,
@@ -80,7 +81,7 @@ impl App {
             player: ui::PlayerUi::default(),
             error: None,
             queue: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_QUEUE_SIZE))),
-            files: Arc::new(Mutex::new(files)),
+            files: Arc::new(files),
             fullscreen: false,
             playback_speed: PlaybackSpeed::default(),
             keep_awake: None,
@@ -102,7 +103,7 @@ impl eframe::App for App {
             if !self.fullscreen {
                 let roots_response = ui::roots_ui(ui, &mut self.root_paths);
                 if roots_response.changed {
-                    *self.files.lock() = RandomFiles::new(&self.root_paths);
+                    self.files = Arc::new(RandomFiles::new(&self.root_paths));
 
                     let mut queue_lock = self.queue.lock();
                     queue_lock.retain(|pipeline| {
@@ -170,7 +171,6 @@ impl eframe::App for App {
             }
 
             if player_response.finished {
-                // TODO: Not if image.
                 load_next_file = true;
             }
         });
@@ -318,7 +318,7 @@ fn pre_roll_loop(pipeline_rx: flume::Receiver<Pipeline>, pipeline_tx: flume::Sen
 
 fn pipeline_loop(
     ctx: egui::Context,
-    files: Arc<Mutex<RandomFiles>>,
+    files: Arc<RandomFiles>,
     pipeline_tx: flume::Sender<Pipeline>,
 ) {
     loop {
@@ -327,7 +327,7 @@ fn pipeline_loop(
             break;
         }
 
-        let Some(path) = files.lock().next() else {
+        let Some(path) = files.next_with_timeout(Duration::from_secs(1)) else {
             log::info!("No files found, stopping pre-roll loop");
             break;
         };
@@ -358,7 +358,7 @@ fn pipeline_loop(
 fn start_file_feeder(
     ctx: &egui::Context,
     queue: Weak<Mutex<VecDeque<Pipeline>>>,
-    files: Arc<Mutex<RandomFiles>>,
+    files: Arc<RandomFiles>,
 ) {
     log::info!("Starting file feeder");
 
