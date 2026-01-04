@@ -1777,35 +1777,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gstreamer-audio"
-version = "0.24.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92829dbca7c59ed4bf0c9154dd8c0cf3185d6bf9dad821b058b801d9671fa763"
-dependencies = [
- "cfg-if",
- "glib",
- "gstreamer",
- "gstreamer-audio-sys",
- "gstreamer-base",
- "libc",
- "smallvec",
-]
-
-[[package]]
-name = "gstreamer-audio-sys"
-version = "0.24.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6acd80847b78122c45983597f74a29071d63273c1eded14be5f7381301711475"
-dependencies = [
- "glib-sys",
- "gobject-sys",
- "gstreamer-base-sys",
- "gstreamer-sys",
- "libc",
- "system-deps",
-]
-
-[[package]]
 name = "gstreamer-base"
 version = "0.24.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1828,36 +1799,6 @@ dependencies = [
  "glib-sys",
  "gobject-sys",
  "gstreamer-sys",
- "libc",
- "system-deps",
-]
-
-[[package]]
-name = "gstreamer-pbutils"
-version = "0.24.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abeb8d02480ba2d2c5b3c1471da269e62f1499b5362d546b7d7bed7ce10baa93"
-dependencies = [
- "glib",
- "gstreamer",
- "gstreamer-audio",
- "gstreamer-pbutils-sys",
- "gstreamer-video",
- "libc",
- "thiserror 2.0.17",
-]
-
-[[package]]
-name = "gstreamer-pbutils-sys"
-version = "0.24.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c557362427c9686168e1466cff312eac9ab2757f6ae1eb591ebf4f1422fcf563"
-dependencies = [
- "glib-sys",
- "gobject-sys",
- "gstreamer-audio-sys",
- "gstreamer-sys",
- "gstreamer-video-sys",
  "libc",
  "system-deps",
 ]
@@ -4961,7 +4902,6 @@ dependencies = [
  "glib",
  "gstreamer",
  "gstreamer-app",
- "gstreamer-pbutils",
  "gstreamer-video",
  "jwalk",
  "keepawake",

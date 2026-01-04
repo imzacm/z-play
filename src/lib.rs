@@ -4,7 +4,6 @@ use eframe::egui;
 
 pub mod app;
 pub mod gstreamer_pipeline;
-pub mod media_type;
 pub mod random_files;
 pub mod ui;
 

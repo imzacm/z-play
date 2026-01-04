@@ -8,7 +8,6 @@ use keepawake::KeepAwake;
 use parking_lot::Mutex;
 
 use crate::gstreamer_pipeline::{Event, Pipeline};
-use crate::media_type::MediaType;
 use crate::random_files::RandomFiles;
 use crate::{Error, ui};
 
@@ -333,36 +332,25 @@ fn pipeline_loop(
             break;
         };
 
-        match MediaType::detect(&path) {
-            Ok(MediaType::Unknown) => {
-                log::info!("Unknown media type for {path:?}");
+        println!("Loading {path:?}");
+        let ctx_clone = ctx.clone();
+        let on_sample = move || ctx_clone.request_repaint();
+        let pipeline = match Pipeline::new(path.clone(), on_sample) {
+            Ok(pipeline) => pipeline,
+            Err(error) => {
+                log::error!("Failed to set path for {}: {error}", path.display());
                 continue;
             }
-            Ok(media_type) => {
-                println!("Loading {path:?} as {media_type:?}");
-                let ctx_clone = ctx.clone();
-                let on_sample = move || ctx_clone.request_repaint();
-                let pipeline = match Pipeline::new(path.clone(), on_sample) {
-                    Ok(pipeline) => pipeline,
-                    Err(error) => {
-                        log::error!("Failed to set path for {}: {error}", path.display());
-                        continue;
-                    }
-                };
+        };
 
-                if let Err(error) = pipeline.set_state(gstreamer::State::Paused) {
-                    log::error!("Failed to set state for {}: {error}", path.display());
-                    continue;
-                }
+        if let Err(error) = pipeline.set_state(gstreamer::State::Paused) {
+            log::error!("Failed to set state for {}: {error}", path.display());
+            continue;
+        }
 
-                if pipeline_tx.send(pipeline).is_err() {
-                    log::info!("Pipeline tx disconnected, stopping pipeline loop");
-                    break;
-                }
-            }
-            Err(error) => {
-                log::warn!("Error detecting media type: {error}");
-            }
+        if pipeline_tx.send(pipeline).is_err() {
+            log::info!("Pipeline tx disconnected, stopping pipeline loop");
+            break;
         }
     }
 }
