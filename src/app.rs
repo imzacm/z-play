@@ -170,7 +170,6 @@ impl eframe::App for App {
             }
 
             if player_response.finished {
-                // TODO: Not if image.
                 load_next_file = true;
             }
         });

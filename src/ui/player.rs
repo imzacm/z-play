@@ -71,7 +71,9 @@ impl PlayerUi {
                         response.finished = true;
                     }
                     Event::Error(error) => {
+                        log::error!("Error in pipeline: {error}");
                         response.error = Some(Error::Any(error));
+                        response.finished = true;
                     }
                     Event::StateChanged { from, to } => {
                         // TODO: Play/pause text.
@@ -160,6 +162,7 @@ impl PlayerUi {
                             let target_seconds = duration_secs * relative_x;
                             let target = gstreamer::ClockTime::from_seconds_f32(target_seconds);
                             if let Err(error) = pipeline.seek(target, Some(self.rate)) {
+                                log::error!("Error seeking player: {error}");
                                 response.error = Some(error);
                             }
                         }
