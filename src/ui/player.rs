@@ -15,6 +15,7 @@ pub struct PlayerUi {
     pipeline: Option<Pipeline>,
     texture: Option<egui::TextureHandle>,
     rate: f64,
+    last_cursor_moved: f64,
 }
 
 impl PlayerUi {
@@ -57,7 +58,7 @@ impl PlayerUi {
         self.pipeline = None;
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Response {
+    pub fn ui(&mut self, ui: &mut egui::Ui, fullscreen: bool) -> Response {
         let mut response = Response { finished: false, error: None };
 
         let Some(pipeline) = &self.pipeline else { return response };
@@ -86,7 +87,17 @@ impl PlayerUi {
             }
         }
 
-        ui.label(format!("Playing: {}", path.display()));
+        let (input_time, pointer_delta) = ui.input(|i| (i.time, i.pointer.delta().length()));
+        if pointer_delta > 0.0 {
+            self.last_cursor_moved = input_time;
+        }
+
+        // Cursor moved in last second.
+        let show_ui = !fullscreen || (input_time - self.last_cursor_moved) < 1.0;
+
+        if show_ui {
+            ui.label(format!("Playing: {}", path.display()));
+        }
 
         let mut toggle_play_pause = ui.ctx().input(|i| i.key_released(egui::Key::Space));
 
@@ -113,6 +124,10 @@ impl PlayerUi {
 
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             ui.horizontal(|ui| {
+                if !show_ui {
+                    return;
+                }
+
                 let show_hours = duration.hours() != 0;
 
                 ui.label(display_clocktime(position, show_hours));

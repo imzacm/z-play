@@ -163,7 +163,7 @@ impl eframe::App for App {
                 ui.ctx().request_repaint();
             }
 
-            let player_response = self.player.ui(ui);
+            let player_response = self.player.ui(ui, self.fullscreen);
             if let Some(error) = player_response.error {
                 self.error = Some(error);
                 ui.ctx().request_repaint();
