@@ -342,7 +342,7 @@ fn pipeline_loop(
                 println!("Loading {path:?} as {media_type:?}");
                 let ctx_clone = ctx.clone();
                 let on_sample = move || ctx_clone.request_repaint();
-                let pipeline = match Pipeline::new(path.clone(), media_type, on_sample) {
+                let pipeline = match Pipeline::new(path.clone(), on_sample) {
                     Ok(pipeline) => pipeline,
                     Err(error) => {
                         log::error!("Failed to set path for {}: {error}", path.display());

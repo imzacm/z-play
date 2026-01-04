@@ -8,12 +8,11 @@ use std::sync::{Arc, LazyLock};
 use glib::object::{Cast, ObjectExt};
 use gstreamer::MessageView;
 use gstreamer::prelude::{
-    ElementExt, ElementExtManual, GstBinExt, GstBinExtManual, GstObjectExt, PadExt,
+    ElementExt, ElementExtManual, GstBinExt, GstBinExtManual, GstObjectExt, PadExt, PadExtManual,
 };
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
 
 use crate::Error;
-use crate::media_type::MediaType;
 
 #[derive(Debug)]
 pub enum Event {
@@ -36,36 +35,32 @@ struct State {
     audio_buffer: Vec<f32>,
     duration: gstreamer::ClockTime,
     position: gstreamer::ClockTime,
+    is_image: bool,
 }
 
 pub struct Pipeline {
     pipeline: gstreamer::Pipeline,
     state: Arc<Mutex<State>>,
-    media_type: MediaType,
     event_rx: flume::Receiver<Event>,
     bus_id: BusId,
 }
 
 impl Pipeline {
-    pub fn new<F>(path: PathBuf, media_type: MediaType, on_sample: F) -> Result<Self, Error>
+    pub fn new<F>(path: PathBuf, on_sample: F) -> Result<Self, Error>
     where
         F: FnMut() + Send + 'static,
     {
         gstreamer::init().expect("Failed to initialize GStreamer");
 
         let state = Arc::new(Mutex::new(State::default()));
-        let pipeline = create_pipeline(path, media_type, on_sample, state.clone())?;
+        let pipeline = create_pipeline(path, on_sample, state.clone())?;
         let (event_tx, event_rx) = flume::unbounded();
 
         let bus = pipeline.bus().unwrap();
         let bus_id = BusId::new();
         send_worker_command(WorkerCommand::AddBus(bus_id, bus, event_tx));
 
-        Ok(Self { pipeline, state, media_type, event_rx, bus_id })
-    }
-
-    pub fn media_type(&self) -> MediaType {
-        self.media_type
+        Ok(Self { pipeline, state, event_rx, bus_id })
     }
 
     pub fn event_rx(&self) -> &flume::Receiver<Event> {
@@ -87,6 +82,10 @@ impl Pipeline {
         std::mem::take(&mut lock.audio_buffer)
     }
 
+    pub fn is_image(&self) -> bool {
+        self.state.lock().is_image
+    }
+
     pub fn duration(&self) -> gstreamer::ClockTime {
         self.state.lock().duration
     }
@@ -104,7 +103,13 @@ impl Pipeline {
         Ok(())
     }
 
-    pub fn seek(&self, time: gstreamer::ClockTime, rate: Option<f64>) -> Result<(), Error> {
+    pub fn seek(&self, mut time: gstreamer::ClockTime, rate: Option<f64>) -> Result<(), Error> {
+        {
+            let mut state_lock = self.state.lock();
+            time = state_lock.duration.min(time);
+            state_lock.position = time;
+        }
+
         if let Some(rate) = rate {
             self.pipeline.seek(
                 rate,
@@ -114,8 +119,6 @@ impl Pipeline {
                 gstreamer::SeekType::None,
                 gstreamer::ClockTime::ZERO,
             )?;
-
-            self.state.lock().position = time;
         } else {
             self.pipeline
                 .seek_simple(gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE, time)?;
@@ -133,7 +136,6 @@ impl Drop for Pipeline {
 
 fn create_pipeline<F>(
     path: PathBuf,
-    media_type: MediaType,
     mut on_sample: F,
     state: Arc<Mutex<State>>,
 ) -> Result<gstreamer::Pipeline, Error>
@@ -155,81 +157,77 @@ where
     let (video_bin, video_app_sink) = create_video_bin()?;
     let audio_bin = create_audio_bin()?;
 
-    let mut video_sink_pad = video_bin.static_pad("sink").unwrap();
-
-    match media_type {
-        MediaType::VideoWithAudio => {
-            pipeline.add_many([&video_bin, &audio_bin])?;
-            video_bin.sync_state_with_parent()?;
-            audio_bin.sync_state_with_parent()?;
-        }
-        MediaType::VideoNoAudio => {
-            pipeline.add(&video_bin)?;
-            video_bin.sync_state_with_parent()?;
-        }
-        MediaType::Image => {
-            let convert = gstreamer::ElementFactory::make("videoconvert").build()?;
-            let image_freeze = gstreamer::ElementFactory::make("imagefreeze")
-                // 300 frames at 30 fps = 10 seconds of video
-                .property("num-buffers", 300)
-                .build()?;
-
-            let caps = gstreamer::Caps::builder("video/x-raw")
-                .field("framerate", gstreamer::Fraction::new(30, 1))
-                .build();
-            let caps =
-                gstreamer::ElementFactory::make("capsfilter").property("caps", caps).build()?;
-
-            pipeline.add_many([&convert, &image_freeze, &caps, video_bin.upcast_ref()])?;
-            gstreamer::Element::link_many([
-                &convert,
-                &image_freeze,
-                &caps,
-                video_bin.upcast_ref(),
-            ])?;
-            video_bin.sync_state_with_parent()?;
-
-            video_sink_pad = convert.static_pad("sink").unwrap();
-        }
-        MediaType::Audio => {
-            pipeline.add(&audio_bin)?;
-            audio_bin.sync_state_with_parent()?;
-        }
-        _ => (),
-    }
-
     // Dynamic linking
-    let video_sink_pad_weak = video_sink_pad.downgrade();
-
-    let audio_sink_pad = audio_bin.static_pad("sink").unwrap();
-    let audio_sink_pad_weak = audio_sink_pad.downgrade();
+    let pipeline_weak = pipeline.downgrade();
+    let state_clone = state.clone();
 
     decode_bin.connect_pad_added(move |_decode_bin, src_pad| {
         let pad_name = src_pad.name();
         log::info!("Decoder: New pad added: {pad_name} - {}", path.display());
 
+        let Some(pipeline) = pipeline_weak.upgrade() else { return };
+
         if pad_name.starts_with("video_") {
-            let Some(video_sink_pad) = video_sink_pad_weak.upgrade() else { return };
-            if !video_sink_pad.is_linked()
-                && let Err(error) = src_pad.link(&video_sink_pad)
-            {
+            if let Err(error) = pipeline.add(&video_bin) {
+                log::error!("Failed to add video bin: {error}");
+                return;
+            }
+            if let Err(error) = video_bin.sync_state_with_parent() {
+                log::error!("Failed to sync video bin: {error}");
+                return;
+            }
+
+            let is_image = src_pad
+                .query_duration::<gstreamer::ClockTime>()
+                .is_none_or(|d| d == gstreamer::ClockTime::ZERO);
+
+            let mut video_sink_pad = video_bin.static_pad("sink").unwrap();
+
+            if is_image {
+                let mut state_lock = state_clone.lock();
+                assert!(!state_lock.is_image);
+                state_lock.is_image = true;
+                video_sink_pad = match add_image_elements(&pipeline, &video_bin) {
+                    Ok(pad) => pad,
+                    Err(error) => {
+                        log::error!("Failed to add image elements: {error}");
+                        return;
+                    }
+                }
+            }
+
+            if video_sink_pad.is_linked() {
+                log::info!("Video pad already linked");
+                return;
+            }
+
+            if let Err(error) = src_pad.link(&video_sink_pad) {
                 log::error!("Failed to link video pad: {error}");
             }
         } else if pad_name.starts_with("audio_") {
-            let Some(audio_sink_pad) = audio_sink_pad_weak.upgrade() else { return };
-            if !audio_sink_pad.is_linked()
-                && let Err(error) = src_pad.link(&audio_sink_pad)
-            {
+            let audio_sink_pad = audio_bin.static_pad("sink").unwrap();
+
+            if audio_sink_pad.is_linked() {
+                log::info!("Audio pad already linked");
+                return;
+            }
+
+            if let Err(error) = pipeline.add(&audio_bin) {
+                log::error!("Failed to add audio bin: {error}");
+                return;
+            }
+            if let Err(error) = audio_bin.sync_state_with_parent() {
+                log::error!("Failed to sync audio bin: {error}");
+                return;
+            }
+
+            if let Err(error) = src_pad.link(&audio_sink_pad) {
                 log::error!("Failed to link audio pad: {error}");
             }
         } else {
             log::info!("Unknown pad type: {pad_name}");
         }
     });
-
-    // TODO: Always link add image and audio elements
-    // TODO: Use no-more-pads to remove image and audio if not present
-    // TODO: Remove need for media_type
 
     let pipeline_weak = pipeline.downgrade();
     let state_clone = state.clone();
@@ -257,7 +255,7 @@ where
                     {
                         if let Some(duration) = pipeline.query_duration::<gstreamer::ClockTime>() {
                             state_lock.duration = duration;
-                        } else if let MediaType::Image = media_type {
+                        } else if state_lock.is_image {
                             state_lock.duration = gstreamer::ClockTime::from_seconds(10);
                         }
                     }
@@ -265,7 +263,16 @@ where
                     if let Some(pts) = buffer.pts()
                         && state_lock.position < pts
                     {
-                        state_lock.position = pts;
+                        state_lock.position = state_lock.duration.min(pts);
+                    }
+
+                    if state_lock.is_image
+                        && state_lock.position == state_lock.duration
+                        && let Some(pipeline) = pipeline_weak.upgrade()
+                    {
+                        let bus = pipeline.bus().unwrap();
+                        let msg = gstreamer::message::Eos::new();
+                        bus.post(msg).expect("Failed to post EOS message on bus");
                     }
                 }
 
@@ -276,6 +283,31 @@ where
     );
 
     Ok(pipeline)
+}
+
+fn add_image_elements(
+    pipeline: &gstreamer::Pipeline,
+    video_bin: &gstreamer::Bin,
+) -> Result<gstreamer::Pad, Error> {
+    let convert = gstreamer::ElementFactory::make("videoconvert").build()?;
+    let image_freeze = gstreamer::ElementFactory::make("imagefreeze")
+        // 300 frames at 30 fps = 10 seconds of video
+        // .property("num-buffers", 300)
+        .build()?;
+
+    let caps = gstreamer::Caps::builder("video/x-raw")
+        .field("framerate", gstreamer::Fraction::new(30, 1))
+        .build();
+    let caps = gstreamer::ElementFactory::make("capsfilter").property("caps", caps).build()?;
+
+    pipeline.add_many([&convert, &image_freeze, &caps])?;
+    gstreamer::Element::link_many([&convert, &image_freeze, &caps, video_bin.upcast_ref()])?;
+
+    for element in [&convert, &image_freeze, &caps] {
+        element.sync_state_with_parent()?;
+    }
+
+    Ok(convert.static_pad("sink").unwrap())
 }
 
 fn create_video_bin() -> Result<(gstreamer::Bin, gstreamer_app::AppSink), Error> {
