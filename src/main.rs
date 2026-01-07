@@ -5,7 +5,7 @@ mod http;
 use std::path::PathBuf;
 
 use eframe::egui;
-use z_play_rs::app::App;
+use z_play::app::App;
 
 fn main() -> eframe::Result {
     if std::env::var_os("RUST_LOG").is_none() {

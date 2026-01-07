@@ -5186,7 +5186,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "z-play-rs"
+name = "z-play"
 version = "0.1.0"
 dependencies = [
  "axum",

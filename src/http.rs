@@ -48,7 +48,7 @@ async fn start_server_inner(port: u16, roots: Vec<PathBuf>) {
         loop {
             let queue_len = queue_tx.len() as u64;
             let timeout = Duration::from_secs(queue_len.max(1));
-            let path = z_play_rs::random_files::random_file_with_timeout(roots, timeout)
+            let path = z_play::random_files::random_file_with_timeout(roots, timeout)
                 .expect("No files found");
             queue_tx.send(path).expect("Queue channel disconnected");
         }
