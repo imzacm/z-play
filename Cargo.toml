@@ -26,3 +26,10 @@ gstreamer-video = "0.24"
 eframe = "0.33"
 rfd = "0.16"
 keepawake = "0.6"
+
+# HTTP Server
+tokio = { version = "1", default-features = false, features = ["rt", "net"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+axum = "0.8"
+urlencoding = "2.1"
