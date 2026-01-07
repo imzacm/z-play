@@ -24,7 +24,7 @@ gstreamer-app = "0.24"
 gstreamer-video = "0.24"
 
 eframe = "0.33"
-rfd = "0.16"
+rfd = "0.17"
 keepawake = "0.6"
 
 # HTTP Server
