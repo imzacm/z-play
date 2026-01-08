@@ -12,7 +12,7 @@ use axum::{Router, middleware};
 use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
 
-const QUEUE_SIZE: usize = 50;
+const QUEUE_SIZE: usize = 1000;
 
 static ROOTS: OnceLock<Vec<PathBuf>> = OnceLock::new();
 static QUEUE_RX: OnceLock<flume::Receiver<PathBuf>> = OnceLock::new();
@@ -42,17 +42,7 @@ async fn start_server_inner(port: u16, roots: Vec<PathBuf>) {
 
     let (queue_tx, queue_rx) = flume::bounded(QUEUE_SIZE);
     QUEUE_RX.get_or_init(move || queue_rx);
-
-    std::thread::spawn(move || {
-        let roots = ROOTS.get().unwrap();
-        loop {
-            let queue_len = queue_tx.len() as u64;
-            let timeout = Duration::from_secs(queue_len.max(1));
-            let path = z_play::random_files::random_file_with_timeout(roots, timeout)
-                .expect("No files found");
-            queue_tx.send(path).expect("Queue channel disconnected");
-        }
-    });
+    std::thread::spawn(move || queue_feeder(queue_tx));
 
     let address = SocketAddr::from(([0, 0, 0, 0], port));
     println!("Listening on http://{address}");
@@ -97,4 +87,17 @@ async fn validate_path_middleware(request: Request, next: Next) -> Result<Respon
     });
 
     if is_valid { Ok(next.run(request).await) } else { Err(StatusCode::NOT_FOUND) }
+}
+
+fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
+    let roots = ROOTS.get().unwrap();
+    loop {
+        let queue_len = queue_tx.len();
+        // Start at 100ms and scale up to 10s based on queue length.
+        let timeout_ms = 100 + (9900 * queue_len / QUEUE_SIZE);
+        let timeout = Duration::from_millis(timeout_ms as u64);
+        let path =
+            z_play::random_files::random_file_with_timeout(roots, timeout).expect("No files found");
+        queue_tx.send(path).expect("Queue channel disconnected");
+    }
 }
