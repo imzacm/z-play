@@ -49,15 +49,20 @@
 <script>
     let playingText
     let container
-
-    const history = []
+    let loading = false
 
     document.addEventListener('DOMContentLoaded', () => {
         playingText = document.getElementById('playing-text')
         container = document.getElementById('container')
+
+        setTimeout(nextFile, 1)
     })
 
     async function nextFile() {
+        if (loading) {
+            return
+        }
+        loading = true
         const path = await fetch('random').then(r => r.text())
         console.log(path)
         const extension = path.split('.').pop().toLowerCase()
@@ -67,7 +72,16 @@
         const audioExtensions = ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac']
 
         if (container.children.length !== 0) {
-            container.removeChild(container.children[0])
+            const element = container.children[0]
+            if (element.tagName === 'VIDEO' || element.tagName === 'AUDIO') {
+                element.pause()
+                element.src = ''
+                element.load()
+
+                element.removeEventListener('canplay', onCanPlay)
+            }
+            element.removeEventListener('error', onError)
+            container.removeChild(element)
         }
 
         let element
@@ -76,12 +90,14 @@
         } else if (videoExtensions.includes(extension)) {
             element = document.createElement('video')
             element.controls = true
+            element.addEventListener('canplay', onCanPlay, {once: true})
         } else if (audioExtensions.includes(extension)) {
             element = document.createElement('audio')
             element.controls = true
+            element.addEventListener('canplay', onCanPlay, {once: true})
         } else {
             console.error(`Unsupported file extension: ${extension}`)
-            await nextFile()
+            setTimeout(nextFile, 1)
             return
         }
 
@@ -93,10 +109,19 @@
             element.src = `files/${path}`
         }
 
-        element.addEventListener('error', () => nextFile(), {once: true})
-        element.addEventListener('ended', () => nextFile(), {once: true})
+        element.addEventListener('error', onError, {once: true})
 
         container.appendChild(element)
+        loading = false
+    }
+
+    function onCanPlay() {
+        this.play().catch(error => console.warn("Autoplay blocked:", error))
+    }
+
+    function onError(event) {
+        console.error('Error playing ' + playingText.innerText, event)
+        setTimeout(nextFile, 1)
     }
 </script>
 </body>
