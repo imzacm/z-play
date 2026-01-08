@@ -1,16 +1,19 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use axum::extract::Request;
-use axum::http::StatusCode;
+use axum::http::header::{CACHE_CONTROL, EXPIRES, PRAGMA};
+use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Router, middleware};
 use tower::ServiceBuilder;
+use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
+use tower_http::set_header::SetResponseHeaderLayer;
 
 const QUEUE_SIZE: usize = 1000;
 
@@ -18,7 +21,7 @@ static ROOTS: OnceLock<Vec<PathBuf>> = OnceLock::new();
 static QUEUE_RX: OnceLock<flume::Receiver<PathBuf>> = OnceLock::new();
 
 pub fn start_server(port: u16, roots: Vec<PathBuf>) {
-    tokio::runtime::Builder::new_current_thread()
+    tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap()
@@ -27,16 +30,32 @@ pub fn start_server(port: u16, roots: Vec<PathBuf>) {
         });
 }
 
-async fn start_server_inner(port: u16, roots: Vec<PathBuf>) {
+async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
     let app = Router::new()
         .route("/", get(root_handler))
         .route("/random", get(random_path_handler))
         .nest_service(
             "/files",
             ServiceBuilder::new()
+                .layer(CompressionLayer::new())
+                .layer(SetResponseHeaderLayer::if_not_present(
+                    CACHE_CONTROL,
+                    HeaderValue::from_static("public, max-age=31536000"),
+                ))
                 .layer(middleware::from_fn(validate_path_middleware))
                 .service(ServeDir::new("/")),
         );
+
+    roots.retain_mut(|root| match root.canonicalize() {
+        Ok(path) => {
+            *root = path;
+            true
+        }
+        Err(error) => {
+            eprintln!("Removing invalid root \"{}\": {error}", root.display());
+            false
+        }
+    });
 
     ROOTS.get_or_init(move || roots);
 
@@ -61,9 +80,9 @@ async fn random_path_handler() -> impl IntoResponse {
 
     (
         [
-            (axum::http::header::CACHE_CONTROL, "no-cache, no-store, must-revalidate"),
-            (axum::http::header::PRAGMA, "no-cache"),
-            (axum::http::header::EXPIRES, "0"),
+            (CACHE_CONTROL, "no-cache, no-store, must-revalidate"),
+            (PRAGMA, "no-cache"),
+            (EXPIRES, "0"),
         ],
         path_str.to_string(),
     )
@@ -72,20 +91,11 @@ async fn random_path_handler() -> impl IntoResponse {
 async fn validate_path_middleware(request: Request, next: Next) -> Result<Response, StatusCode> {
     let path_query = request.uri().path();
     let decoded_path = urlencoding::decode(path_query).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let requested_path = PathBuf::from(decoded_path.into_owned());
-
-    let canonical_requested = requested_path.canonicalize().map_err(|_| StatusCode::NOT_FOUND)?;
+    let requested_path = Path::new(decoded_path.as_ref());
 
     let roots = ROOTS.get().unwrap();
 
-    let is_valid = roots.iter().any(|root| {
-        if let Ok(canonical_root) = root.canonicalize() {
-            canonical_requested.starts_with(canonical_root)
-        } else {
-            false
-        }
-    });
-
+    let is_valid = roots.iter().any(|root| requested_path.starts_with(root));
     if is_valid { Ok(next.run(request).await) } else { Err(StatusCode::NOT_FOUND) }
 }
 
