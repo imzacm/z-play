@@ -6,31 +6,55 @@
         body {
             margin: 0;
             display: flex;
-            flex-direction: column;
+            flex-wrap: wrap;
             height: 100dvh;
-            overflow: hidden; /* Prevents scrollbars on the body */
+            /*overflow: hidden;*/
+            align-content: stretch;
         }
 
+        /*
         h1 {
             margin: 10px;
             font-size: 1.2rem;
             flex-shrink: 0;
         }
+         */
 
-        #container {
-            flex-grow: 1;
+        .root {
+            flex: 1 1 auto;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            max-height: 100%;
+            min-width: 10%;
+            max-width: 100%;
+            width: 30%;
+            border: 1px solid #333;
+            box-sizing: border-box;
+        }
+
+        h2 {
+            margin: 5px;
+            font-size: 0.9rem;
+            flex-shrink: 0;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+
+        .container {
+            flex: 1;
             min-height: 0;
             display: flex;
             justify-content: center;
             align-items: center;
             overflow: hidden;
-            background-color: #000; /* Black background for media */
+            background-color: #000;
         }
 
-        #container img, #container video {
+        .container img, .container video {
             width: 100%;
             height: 100%;
-            object-fit: contain; /* Keeps aspect ratio while fitting */
+            object-fit: contain;
         }
 
         button {
@@ -40,90 +64,127 @@
             cursor: pointer;
         }
     </style>
+
+    <script>
+        function addPlayer() {
+            const image = document.createElement('img')
+            const video = document.createElement('video')
+            const audio = document.createElement('audio')
+
+            let active = null
+            let loading = false
+
+            const root = document.createElement('div')
+            root.classList.add('root')
+            root.innerHTML = `
+<h2><a class="add" href="#">Add player</a> <a class="remove" href="#">Remove player</a></h2>
+<h2>Playing <span class="playing-text"></span></h2>
+<div class="container"></div>
+<button class="next">Next</button>`
+
+            const playingText = root.querySelector('.playing-text')
+            const removeButton = root.querySelector('.remove')
+            const addButton = root.querySelector('.add')
+            const container = root.querySelector('.container')
+            const nextButton = root.querySelector('.next')
+
+            const stop = () => {
+                if (active === null) {
+                    return
+                }
+                if (active.tagName === 'VIDEO' || active.tagName === 'AUDIO') {
+                    active.pause()
+                    active.src = ''
+                    active.load()
+                }
+                active.style.display = 'none'
+                active = null
+            }
+
+            const nextFile = async () => {
+                if (loading) {
+                    return
+                }
+                loading = true
+                const path = await fetch('random').then(r => r.text())
+                console.log(path)
+                const extension = path.split('.').pop().toLowerCase()
+
+                const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'tiff']
+                const videoExtensions = ['mp4', 'mkv', 'webm', 'avi', 'mov', 'wmv', 'flv', 'mpeg']
+                const audioExtensions = ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac']
+
+                stop()
+
+                if (imageExtensions.includes(extension)) {
+                    active = image
+                } else if (videoExtensions.includes(extension)) {
+                    active = video
+                } else if (audioExtensions.includes(extension)) {
+                    active = audio
+                } else {
+                    console.error(`Unsupported file extension: ${extension}`)
+                    loading = false
+                    setTimeout(nextFile, 1)
+                    return
+                }
+
+                playingText.innerText = path
+
+                if (path.startsWith('/')) {
+                    active.src = `files${path}`
+                } else {
+                    active.src = `files/${path}`
+                }
+
+                active.style.display = ''
+
+                loading = false
+            }
+
+            function onCanPlay() {
+                this.play().catch(error => console.warn("Autoplay blocked:", error))
+            }
+
+            const onError = event => {
+                console.error('Error playing ' + playingText.innerText, event)
+                nextFile()
+            }
+
+            // TODO: Add countdown for images and call onEnded.
+            const onEnded = () => {
+                nextFile()
+            }
+
+            removeButton.addEventListener('click', () => {
+                stop()
+                document.body.removeChild(root)
+            })
+
+            addButton.addEventListener('click', addPlayer)
+
+            for (const element of [image, video, audio]) {
+                element.style.display = 'none'
+                if (element !== this.image) {
+                    element.controls = true
+                    element.addEventListener('canplay', onCanPlay)
+                    element.addEventListener('ended', onEnded)
+                }
+                element.addEventListener('error', onError)
+                container.appendChild(element)
+            }
+
+            nextButton.addEventListener('click', nextFile)
+
+            document.body.appendChild(root)
+            nextFile()
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            addPlayer()
+        })
+    </script>
 </head>
 <body>
-<h1>Playing: <span id="playing-text"></span></h1>
-<div id="container"></div>
-<button onclick="nextFile()">Next</button>
-
-<script>
-    let playingText
-    let container
-    let loading = false
-
-    document.addEventListener('DOMContentLoaded', () => {
-        playingText = document.getElementById('playing-text')
-        container = document.getElementById('container')
-
-        setTimeout(nextFile, 1)
-    })
-
-    async function nextFile() {
-        if (loading) {
-            return
-        }
-        loading = true
-        const path = await fetch('random').then(r => r.text())
-        console.log(path)
-        const extension = path.split('.').pop().toLowerCase()
-
-        const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'tiff']
-        const videoExtensions = ['mp4', 'mkv', 'webm', 'avi', 'mov', 'wmv', 'flv', 'mpeg']
-        const audioExtensions = ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac']
-
-        if (container.children.length !== 0) {
-            const element = container.children[0]
-            if (element.tagName === 'VIDEO' || element.tagName === 'AUDIO') {
-                element.pause()
-                element.src = ''
-                element.load()
-
-                element.removeEventListener('canplay', onCanPlay)
-            }
-            element.removeEventListener('error', onError)
-            container.removeChild(element)
-        }
-
-        let element
-        if (imageExtensions.includes(extension)) {
-            element = document.createElement('img')
-        } else if (videoExtensions.includes(extension)) {
-            element = document.createElement('video')
-            element.controls = true
-            element.addEventListener('canplay', onCanPlay, {once: true})
-        } else if (audioExtensions.includes(extension)) {
-            element = document.createElement('audio')
-            element.controls = true
-            element.addEventListener('canplay', onCanPlay, {once: true})
-        } else {
-            console.error(`Unsupported file extension: ${extension}`)
-            loading = false
-            setTimeout(nextFile, 1)
-            return
-        }
-
-        playingText.innerText = path
-
-        if (path.startsWith('/')) {
-            element.src = `files${path}`
-        } else {
-            element.src = `files/${path}`
-        }
-
-        element.addEventListener('error', onError, {once: true})
-
-        container.appendChild(element)
-        loading = false
-    }
-
-    function onCanPlay() {
-        this.play().catch(error => console.warn("Autoplay blocked:", error))
-    }
-
-    function onError(event) {
-        console.error('Error playing ' + playingText.innerText, event)
-        setTimeout(nextFile, 1)
-    }
-</script>
 </body>
 </html>
