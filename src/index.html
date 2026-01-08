@@ -97,6 +97,7 @@
             element.addEventListener('canplay', onCanPlay, {once: true})
         } else {
             console.error(`Unsupported file extension: ${extension}`)
+            loading = false
             setTimeout(nextFile, 1)
             return
         }
