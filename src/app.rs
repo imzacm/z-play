@@ -8,6 +8,7 @@ use keepawake::KeepAwake;
 use parking_lot::Mutex;
 
 use crate::gstreamer_pipeline::{Event, Pipeline};
+use crate::path_cache::PathCache;
 use crate::playback_speed::PlaybackSpeed;
 use crate::random_files::random_file;
 use crate::{Error, ui};
@@ -275,6 +276,8 @@ fn pipeline_loop(
     root_paths: Arc<Mutex<Vec<PathBuf>>>,
     pipeline_tx: flume::Sender<Pipeline>,
 ) {
+    let mut cache = PathCache::default();
+
     loop {
         if pipeline_tx.is_disconnected() {
             log::info!("Pipeline tx disconnected, stopping pipeline loop");
@@ -291,6 +294,10 @@ fn pipeline_loop(
                 }
             }
         };
+
+        if !cache.insert_or_remove(path.clone()) {
+            continue;
+        }
 
         println!("Loading {path:?}");
         let ctx_clone = ctx.clone();

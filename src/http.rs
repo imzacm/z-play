@@ -14,6 +14,7 @@ use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
+use z_play::path_cache::PathCache;
 
 const QUEUE_SIZE: usize = 1000;
 
@@ -101,6 +102,7 @@ async fn validate_path_middleware(request: Request, next: Next) -> Result<Respon
 
 fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
     let roots = ROOTS.get().unwrap();
+    let mut cache = PathCache::default();
     loop {
         let queue_len = queue_tx.len();
         // Start at 100ms and scale up to 10s based on queue length.
@@ -108,6 +110,9 @@ fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
         let timeout = Duration::from_millis(timeout_ms as u64);
         let path =
             z_play::random_files::random_file_with_timeout(roots, timeout).expect("No files found");
-        queue_tx.send(path).expect("Queue channel disconnected");
+
+        if cache.insert_or_remove(path.clone()) {
+            queue_tx.send(path).expect("Queue channel disconnected");
+        }
     }
 }
