@@ -22,6 +22,8 @@ fn main() -> eframe::Result {
     {
         let port = port.parse::<u16>().expect("Invalid port number");
         http_port = Some(port);
+
+        args.next();
     }
 
     let root_dirs = args.map(PathBuf::from).collect::<Vec<_>>();
