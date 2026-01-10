@@ -92,6 +92,7 @@
                 if (active === null) {
                     return
                 }
+                active.onerror = null
                 if (active.tagName === 'VIDEO' || active.tagName === 'AUDIO') {
                     active.pause()
                     active.src = ''
@@ -130,6 +131,8 @@
                 }
 
                 playingText.innerText = path
+
+                active.onerror = onError
 
                 if (path.startsWith('/')) {
                     active.src = `files${path}`
@@ -170,7 +173,6 @@
                     element.addEventListener('canplay', onCanPlay)
                     element.addEventListener('ended', onEnded)
                 }
-                element.addEventListener('error', onError)
                 container.appendChild(element)
             }
 
