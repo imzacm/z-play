@@ -44,7 +44,6 @@ impl PlayerUi {
     where
         P: Into<Option<Pipeline>>,
     {
-        self.texture = None;
         let pipeline = pipeline.into();
         if let Some(pipeline) = &pipeline {
             let position = pipeline.position();
@@ -54,7 +53,6 @@ impl PlayerUi {
     }
 
     pub fn clear(&mut self) {
-        self.texture = None;
         self.pipeline = None;
     }
 
@@ -106,8 +104,14 @@ impl PlayerUi {
                 [frame.width as usize, frame.height as usize],
                 &frame.data,
             );
-            let texture = ui.ctx().load_texture("video-frame", image, egui::TextureOptions::LINEAR);
-            self.texture = Some(texture);
+
+            if let Some(texture) = &mut self.texture {
+                texture.set(image, egui::TextureOptions::LINEAR);
+            } else {
+                let texture =
+                    ui.ctx().load_texture("video-frame", image, egui::TextureOptions::LINEAR);
+                self.texture = Some(texture);
+            }
         }
 
         let duration = pipeline.duration();
@@ -186,7 +190,9 @@ impl PlayerUi {
             });
 
             ui.centered_and_justified(|ui| {
-                if let Some(texture) = &self.texture {
+                if let Some(texture) = &self.texture
+                    && self.pipeline.is_some()
+                {
                     let video_size = texture.size();
                     let video_size = egui::Vec2::new(video_size[0] as f32, video_size[1] as f32);
                     let available_size = ui.available_size();
@@ -224,7 +230,7 @@ impl PlayerUi {
             }
         }
 
-        ui.ctx().request_repaint();
+        // ui.ctx().request_repaint();
         response
     }
 }

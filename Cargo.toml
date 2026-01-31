@@ -11,7 +11,7 @@ log = "0.4"
 env_logger = "0.11"
 
 thiserror = "2.0"
-rand = "0.9"
+nanorand = "0.8"
 rayon = "1.11"
 jwalk = "0.8"
 

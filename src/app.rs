@@ -116,7 +116,7 @@ impl eframe::App for App {
             if toggle_fullscreen_button {
                 self.fullscreen = !self.fullscreen;
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
-                ui.ctx().request_repaint();
+                // ui.ctx().request_repaint();
             }
 
             let player_response = self.player.ui(ui, self.fullscreen);
@@ -139,7 +139,7 @@ impl eframe::App for App {
             self.player.swap_pipeline(pipeline);
         }
 
-        ctx.request_repaint();
+        // ctx.request_repaint();
 
         let playing = self.player.is_playing();
         if playing && self.keep_awake.is_none() {
@@ -162,53 +162,22 @@ impl eframe::App for App {
     }
 }
 
-fn queue_loop(
-    ctx: egui::Context,
-    queue: Weak<Mutex<VecDeque<Pipeline>>>,
+fn pre_roll_loop(
     pipeline_rx: flume::Receiver<Pipeline>,
+    ctx: egui::Context,
+    out_queue: Weak<Mutex<VecDeque<Pipeline>>>,
 ) {
-    loop {
-        let Some(queue) = queue.upgrade() else {
-            log::info!("Queue dropped, stopping queue loop");
-            break;
-        };
-
-        let Ok(pipeline) = pipeline_rx.recv() else {
-            log::info!("Pipeline rx disconnected, stopping queue loop");
-            break;
-        };
-
-        while queue.lock().len() >= MAX_QUEUE_SIZE {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-
-        queue.lock().push_back(pipeline);
-
-        {
-            let mut queue_lock = queue.lock();
-            for pipeline in pipeline_rx.try_iter() {
-                if queue_lock.len() >= MAX_QUEUE_SIZE {
-                    break;
-                }
-
-                let path = pipeline.path();
-                log::info!("Queueing {}", path.display());
-
-                queue_lock.push_back(pipeline);
-            }
-        }
-
-        ctx.request_repaint();
-    }
-}
-
-fn pre_roll_loop(pipeline_rx: flume::Receiver<Pipeline>, pipeline_tx: flume::Sender<Pipeline>) {
     let mut queue = VecDeque::<Pipeline>::with_capacity(MAX_PRE_ROLL_QUEUE_SIZE);
-    'main: loop {
-        if pipeline_tx.is_disconnected() {
-            log::info!("Pipeline tx disconnected, stopping pre-roll loop");
+    loop {
+        if pipeline_rx.is_disconnected() {
+            log::info!("Pipeline rx disconnected, stopping pre-roll loop");
             break;
         }
+
+        let Some(out_queue) = out_queue.upgrade() else {
+            log::info!("Queue dropped, stopping pre_roll loop");
+            break;
+        };
 
         let queue_len = queue.len();
         if queue_len != 0 {
@@ -236,11 +205,12 @@ fn pre_roll_loop(pipeline_rx: flume::Receiver<Pipeline>, pipeline_tx: flume::Sen
                     }
                 }
 
-                if is_paused {
-                    if pipeline_tx.send(pipeline).is_err() {
-                        log::info!("Pipeline tx disconnected, stopping pre-roll loop");
-                        break 'main;
-                    }
+                if is_paused && out_queue.lock().len() < MAX_QUEUE_SIZE {
+                    let path = pipeline.path();
+                    log::info!("Queueing {}", path.display());
+
+                    out_queue.lock().push_back(pipeline);
+                    ctx.request_repaint();
                 } else {
                     queue.push_back(pipeline);
                 }
@@ -284,12 +254,12 @@ fn pipeline_loop(
             break;
         }
 
-        log::info!("Starting pre-roll loop");
+        log::info!("Starting pipeline loop");
         let roots = root_paths.lock().clone();
-        let path = match random_file(&roots) {
+        let path = match random_file(roots) {
             Some(path) => path,
             None => {
-                log::info!("No files found, stopping pre-roll loop");
+                log::info!("No files found, stopping pipeline loop");
                 break;
             }
         };
@@ -328,14 +298,10 @@ fn start_file_feeder(
 ) {
     log::info!("Starting file feeder");
 
-    let (initial_pipeline_tx, initial_pipeline_rx) = flume::bounded(MAX_PRE_ROLL_QUEUE_SIZE);
+    let (pipeline_tx, pipeline_rx) = flume::bounded(1);
     let ctx_clone = ctx.clone();
-    std::thread::spawn(move || pipeline_loop(ctx_clone, root_paths, initial_pipeline_tx));
-
-    let (pipeline_tx, pipeline_rx) = flume::bounded(MAX_PRE_ROLL_QUEUE_SIZE);
-
-    std::thread::spawn(move || pre_roll_loop(initial_pipeline_rx, pipeline_tx));
+    std::thread::spawn(move || pipeline_loop(ctx_clone, root_paths, pipeline_tx));
 
     let ctx_clone = ctx.clone();
-    std::thread::spawn(move || queue_loop(ctx_clone, queue, pipeline_rx));
+    std::thread::spawn(move || pre_roll_loop(pipeline_rx, ctx_clone, queue));
 }

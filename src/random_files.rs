@@ -1,38 +1,55 @@
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-
-use rand::Rng;
+use nanorand::Rng;
+use parking_lot::Mutex;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
-pub fn random_file<P>(roots: &[P]) -> Option<PathBuf>
+pub fn random_file<R>(roots: R) -> Option<PathBuf>
 where
-    P: AsRef<Path> + Sync,
+    R: Into<Cow<'static, [PathBuf]>>,
 {
     random_file_with_timeout(roots, Duration::from_secs(2), Duration::from_secs(1))
 }
 
-pub fn random_file_with_timeout<P>(
-    roots: &[P],
+pub fn random_file_with_timeout<R>(
+    roots: R,
     scan_timeout: Duration,
     busy_timeout: Duration,
 ) -> Option<PathBuf>
 where
-    P: AsRef<Path> + Sync,
+    R: Into<Cow<'static, [PathBuf]>>,
 {
-    let deadline = Instant::now() + scan_timeout;
-    let cancel = Arc::new(AtomicBool::new(false));
+    let (path_tx, path_rx) = flume::unbounded();
 
-    let result = roots
-        .par_iter()
-        .take_any_while(|_| !cancel.load(Ordering::Relaxed) && Instant::now() <= deadline)
-        .map(|root| scan_root(root.as_ref(), deadline, busy_timeout, cancel.clone()))
-        .reduce(ScanResult::default, reduce_scan_result);
+    let roots = roots.into();
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + scan_timeout;
+        let cancel = Arc::new(AtomicBool::new(false));
 
-    result.selected
+        let path_tx = Mutex::new(Some(path_tx));
+        roots
+            .par_iter()
+            .take_any_while(|_| !cancel.load(Ordering::Relaxed) && Instant::now() <= deadline)
+            .map(|root| scan_root(root.as_ref(), deadline, busy_timeout, cancel.clone()))
+            .for_each(|result| {
+                if cancel.load(Ordering::Relaxed) || Instant::now() > deadline {
+                    *path_tx.lock() = None;
+                }
+                if let Some(path_tx) = &*path_tx.lock() {
+                    _ = path_tx.send(result);
+                }
+            });
+    });
+
+    let result = path_rx.into_iter().reduce(reduce_scan_result);
+
+    result.and_then(|result| result.selected)
 }
 
+#[derive(Debug)]
 struct ScanResult<T> {
     selected: Option<T>,
     count: u64,
@@ -100,8 +117,8 @@ fn reduce_scan_result(mut a: ScanResult<PathBuf>, b: ScanResult<PathBuf>) -> Sca
 
     // Weighted random choice to decide which "selected" item to keep.
     // Choose 'a's sample with probability a.count / total_count
-    let mut rng = rand::rng();
-    if rng.random_range(0..total_count) < a.count {
+    let mut rng = nanorand::tls_rng();
+    if rng.generate_range(0..total_count) < a.count {
         a.count = total_count;
         a
     } else {

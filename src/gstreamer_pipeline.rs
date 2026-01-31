@@ -129,7 +129,10 @@ impl Pipeline {
 
 impl Drop for Pipeline {
     fn drop(&mut self) {
-        _ = self.pipeline.set_state(gstreamer::State::Null);
+        let pipeline = std::mem::replace(&mut self.pipeline, gstreamer::Pipeline::new());
+        rayon::spawn(move || {
+            _ = pipeline.set_state(gstreamer::State::Null);
+        });
         send_worker_command(WorkerCommand::RemoveBus(self.bus_id));
     }
 }
