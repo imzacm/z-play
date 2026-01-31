@@ -107,9 +107,11 @@ fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
         let queue_len = queue_tx.len();
         // Start at 100ms and scale up to 10s based on queue length.
         let timeout_ms = 100 + (9900 * queue_len / QUEUE_SIZE);
-        let timeout = Duration::from_millis(timeout_ms as u64);
+        let busy_timeout = Duration::from_millis(timeout_ms as u64);
+        let scan_timeout = busy_timeout * 2;
         let path =
-            z_play::random_files::random_file_with_timeout(roots, timeout).expect("No files found");
+            z_play::random_files::random_file_with_timeout(roots, scan_timeout, busy_timeout)
+                .expect("No files found");
 
         if cache.insert_or_remove(path.clone()) {
             queue_tx.send(path).expect("Queue channel disconnected");

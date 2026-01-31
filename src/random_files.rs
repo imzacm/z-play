@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use rand::Rng;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
@@ -8,33 +10,27 @@ pub fn random_file<P>(roots: &[P]) -> Option<PathBuf>
 where
     P: AsRef<Path> + Sync,
 {
-    random_file_with_timeout(roots, Duration::from_secs(1))
+    random_file_with_timeout(roots, Duration::from_secs(2), Duration::from_secs(1))
 }
 
-pub fn random_file_with_timeout<P>(roots: &[P], timeout: Duration) -> Option<PathBuf>
+pub fn random_file_with_timeout<P>(
+    roots: &[P],
+    scan_timeout: Duration,
+    busy_timeout: Duration,
+) -> Option<PathBuf>
 where
     P: AsRef<Path> + Sync,
 {
-    let results = roots
+    let deadline = Instant::now() + scan_timeout;
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let result = roots
         .par_iter()
-        .map(|root| scan_root(root.as_ref(), timeout))
-        .collect::<Vec<_>>();
+        .take_any_while(|_| !cancel.load(Ordering::Relaxed) && Instant::now() <= deadline)
+        .map(|root| scan_root(root.as_ref(), deadline, busy_timeout, cancel.clone()))
+        .reduce(ScanResult::default, reduce_scan_result);
 
-    let total_files = results.iter().map(|r| r.count).sum();
-    if total_files == 0 {
-        return None;
-    }
-
-    let mut rng = rand::rng();
-    let mut index = rng.random_range(0..total_files);
-    for result in results {
-        if index < result.count {
-            return result.selected;
-        }
-
-        index -= result.count;
-    }
-    None
+    result.selected
 }
 
 struct ScanResult<T> {
@@ -42,10 +38,24 @@ struct ScanResult<T> {
     count: u64,
 }
 
-fn scan_root(path: &Path, busy_timeout: Duration) -> ScanResult<PathBuf> {
-    let identity = || ScanResult { selected: None, count: 0 };
+impl<T> Default for ScanResult<T> {
+    fn default() -> Self {
+        Self { selected: None, count: 0 }
+    }
+}
 
-    let Ok(metadata) = std::fs::metadata(path) else { return identity() };
+fn scan_root(
+    path: &Path,
+    deadline: Instant,
+    busy_timeout: Duration,
+    cancel: Arc<AtomicBool>,
+) -> ScanResult<PathBuf> {
+    if cancel.load(Ordering::Relaxed) || Instant::now() > deadline {
+        cancel.store(true, Ordering::Relaxed);
+        return ScanResult::default();
+    }
+
+    let Ok(metadata) = std::fs::metadata(path) else { return ScanResult::default() };
     if !metadata.file_type().is_dir() {
         return ScanResult { selected: Some(path.to_path_buf()), count: 1 };
     }
@@ -53,35 +63,17 @@ fn scan_root(path: &Path, busy_timeout: Duration) -> ScanResult<PathBuf> {
     let walk_dir = jwalk::WalkDir::new(path)
         .parallelism(jwalk::Parallelism::RayonDefaultPool { busy_timeout });
 
-    let reduce = |mut a: ScanResult<PathBuf>, b: ScanResult<PathBuf>| -> ScanResult<PathBuf> {
-        let total_count = a.count.saturating_add(b.count);
-
-        // If one side is empty, just return the other
-        if total_count == 0 {
-            return identity();
-        }
-        if a.count == 0 {
-            return b;
-        }
-        if b.count == 0 {
-            return a;
-        }
-
-        // Weighted random choice to decide which "selected" item to keep.
-        // Choose 'a's sample with probability a.count / total_count
-        let mut rng = rand::rng();
-        if rng.random_range(0..total_count) < a.count {
-            a.count = total_count;
-            a
-        } else {
-            // Need to create a new struct to take ownership of b.selected
-            ScanResult { selected: b.selected, count: total_count }
-        }
-    };
-
     walk_dir
         .into_iter()
         .par_bridge()
+        .take_any_while(|_| {
+            if !cancel.load(Ordering::Relaxed) && Instant::now() <= deadline {
+                true
+            } else {
+                cancel.store(true, Ordering::Relaxed);
+                false
+            }
+        })
         .filter_map(|entry| {
             let entry = entry.ok()?;
             if entry.file_type().is_dir() {
@@ -89,5 +81,31 @@ fn scan_root(path: &Path, busy_timeout: Duration) -> ScanResult<PathBuf> {
             }
             Some(ScanResult { selected: Some(entry.path()), count: 1 })
         })
-        .reduce(identity, reduce)
+        .reduce(ScanResult::default, reduce_scan_result)
+}
+
+fn reduce_scan_result(mut a: ScanResult<PathBuf>, b: ScanResult<PathBuf>) -> ScanResult<PathBuf> {
+    let total_count = a.count.saturating_add(b.count);
+
+    // If one side is empty, just return the other
+    if total_count == 0 {
+        return ScanResult::default();
+    }
+    if a.count == 0 {
+        return b;
+    }
+    if b.count == 0 {
+        return a;
+    }
+
+    // Weighted random choice to decide which "selected" item to keep.
+    // Choose 'a's sample with probability a.count / total_count
+    let mut rng = rand::rng();
+    if rng.random_range(0..total_count) < a.count {
+        a.count = total_count;
+        a
+    } else {
+        // Need to create a new struct to take ownership of b.selected
+        ScanResult { selected: b.selected, count: total_count }
+    }
 }

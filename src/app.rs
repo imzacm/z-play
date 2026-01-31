@@ -284,14 +284,13 @@ fn pipeline_loop(
             break;
         }
 
-        let path = {
-            let root_paths = root_paths.lock();
-            match random_file(&root_paths) {
-                Some(path) => path,
-                None => {
-                    log::info!("No files found, stopping pre-roll loop");
-                    break;
-                }
+        log::info!("Starting pre-roll loop");
+        let roots = root_paths.lock().clone();
+        let path = match random_file(&roots) {
+            Some(path) => path,
+            None => {
+                log::info!("No files found, stopping pre-roll loop");
+                break;
             }
         };
 
