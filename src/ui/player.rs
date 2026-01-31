@@ -2,12 +2,37 @@ use eframe::egui;
 use eframe::egui::Widget;
 
 use crate::Error;
-use crate::gstreamer_pipeline::{Event, Pipeline};
+use crate::pipeline::{Event, Pipeline};
 
 #[derive(Debug)]
 pub struct Response {
     pub finished: bool,
     pub error: Option<Error>,
+    pub pipeline_rx: Option<PipelineRecv>,
+}
+
+#[derive(Debug)]
+pub enum PipelineRecv {
+    SetState(flume::Receiver<Result<(), gstreamer::StateChangeError>>),
+    Seek(flume::Receiver<Result<(), glib::BoolError>>),
+}
+
+impl PipelineRecv {
+    pub fn is_disconnected(&self) -> bool {
+        match self {
+            PipelineRecv::SetState(rx) => rx.is_disconnected(),
+            PipelineRecv::Seek(rx) => rx.is_disconnected(),
+        }
+    }
+
+    pub fn try_recv(&self) -> Option<Result<(), Error>> {
+        match self {
+            PipelineRecv::SetState(rx) => {
+                rx.try_recv().ok().map(|result| result.map_err(Error::from))
+            }
+            PipelineRecv::Seek(rx) => rx.try_recv().ok().map(|result| result.map_err(Error::from)),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -23,13 +48,14 @@ impl PlayerUi {
         self.rate
     }
 
-    pub fn set_rate(&mut self, rate: f64) -> Result<(), Error> {
+    pub fn set_rate(&mut self, rate: f64) -> Option<PipelineRecv> {
         self.rate = rate;
         if let Some(pipeline) = &self.pipeline {
             let position = pipeline.position();
-            pipeline.seek(position, Some(self.rate))?;
+            let result_rx = pipeline.seek(position, Some(self.rate));
+            return Some(PipelineRecv::Seek(result_rx));
         }
-        Ok(())
+        None
     }
 
     pub fn is_playing(&self) -> bool {
@@ -45,10 +71,6 @@ impl PlayerUi {
         P: Into<Option<Pipeline>>,
     {
         let pipeline = pipeline.into();
-        if let Some(pipeline) = &pipeline {
-            let position = pipeline.position();
-            pipeline.seek(position, Some(self.rate)).expect("Failed to set playback rate");
-        }
         std::mem::replace(&mut self.pipeline, pipeline)
     }
 
@@ -57,7 +79,7 @@ impl PlayerUi {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, fullscreen: bool) -> Response {
-        let mut response = Response { finished: false, error: None };
+        let mut response = Response { finished: false, error: None, pipeline_rx: None };
 
         let Some(pipeline) = &self.pipeline else { return response };
         let path = pipeline.path();
@@ -180,10 +202,8 @@ impl PlayerUi {
 
                             let target_seconds = duration_secs * relative_x;
                             let target = gstreamer::ClockTime::from_seconds_f32(target_seconds);
-                            if let Err(error) = pipeline.seek(target, Some(self.rate)) {
-                                log::error!("Error seeking player: {error}");
-                                response.error = Some(error);
-                            }
+                            let result_rx = pipeline.seek(target, Some(self.rate));
+                            response.pipeline_rx = Some(PipelineRecv::Seek(result_rx));
                         }
                     }
                 });
@@ -216,17 +236,13 @@ impl PlayerUi {
             });
         });
 
-        // TODO: Play on video does nothing.
-        // Seek and then play works.
         if toggle_play_pause {
             if pipeline.state() == gstreamer::State::Playing {
-                if let Err(error) = pipeline.set_state(gstreamer::State::Paused) {
-                    log::error!("Error pausing player: {error}");
-                    response.error = Some(error);
-                }
-            } else if let Err(error) = pipeline.set_state(gstreamer::State::Playing) {
-                log::error!("Error playing player: {error}");
-                response.error = Some(error);
+                let result_rx = pipeline.set_state(gstreamer::State::Paused);
+                response.pipeline_rx = Some(PipelineRecv::SetState(result_rx));
+            } else {
+                let result_rx = pipeline.set_state(gstreamer::State::Playing);
+                response.pipeline_rx = Some(PipelineRecv::SetState(result_rx));
             }
         }
 

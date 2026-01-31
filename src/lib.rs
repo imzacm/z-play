@@ -3,8 +3,8 @@
 use eframe::egui;
 
 pub mod app;
-pub mod gstreamer_pipeline;
 pub mod path_cache;
+pub mod pipeline;
 pub mod playback_speed;
 pub mod random_files;
 pub mod ui;

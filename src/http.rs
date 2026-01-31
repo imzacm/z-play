@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use axum::extract::Request;
 use axum::http::header::{CACHE_CONTROL, EXPIRES, PRAGMA};
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
@@ -15,8 +15,11 @@ use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 use z_play::path_cache::PathCache;
+use z_play::random_files::random_file_with_timeout;
 
 const QUEUE_SIZE: usize = 1000;
+const QUEUE_COUNT_HEADER: HeaderName = HeaderName::from_static("x-queue-count");
+const QUEUE_SIZE_HEADER: HeaderName = HeaderName::from_static("x-queue-size");
 
 static ROOTS: OnceLock<Vec<PathBuf>> = OnceLock::new();
 static QUEUE_RX: OnceLock<flume::Receiver<PathBuf>> = OnceLock::new();
@@ -35,6 +38,8 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
     let app = Router::new()
         .route("/", get(root_handler))
         .route("/random", get(random_path_handler))
+        .route("/queue", get(queue_info))
+        .route("/reset", get(reset_queue_handler))
         .nest_service(
             "/files",
             ServiceBuilder::new()
@@ -85,8 +90,22 @@ async fn random_path_handler() -> impl IntoResponse {
             (PRAGMA, "no-cache"),
             (EXPIRES, "0"),
         ],
+        [
+            (QUEUE_COUNT_HEADER, queue_rx.len().to_string()),
+            (QUEUE_SIZE_HEADER, QUEUE_SIZE.to_string()),
+        ],
         path_str.to_string(),
     )
+}
+
+async fn queue_info() -> impl IntoResponse {
+    let queue_rx = QUEUE_RX.get().unwrap();
+    [(QUEUE_COUNT_HEADER, queue_rx.len().to_string()), (QUEUE_SIZE_HEADER, QUEUE_SIZE.to_string())]
+}
+
+async fn reset_queue_handler() -> impl IntoResponse {
+    for _ in QUEUE_RX.get().unwrap().try_iter() {}
+    StatusCode::NO_CONTENT
 }
 
 async fn validate_path_middleware(request: Request, next: Next) -> Result<Response, StatusCode> {
@@ -106,12 +125,18 @@ fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
     loop {
         let queue_len = queue_tx.len();
         // Start at 100ms and scale up to 10s based on queue length.
-        let timeout_ms = 100 + (9900 * queue_len / QUEUE_SIZE);
-        let busy_timeout = Duration::from_millis(timeout_ms as u64);
-        let scan_timeout = busy_timeout * 2;
-        let path =
-            z_play::random_files::random_file_with_timeout(roots, scan_timeout, busy_timeout)
-                .expect("No files found");
+        let mut timeout_ms = 100 + (9900 * queue_len / QUEUE_SIZE);
+        let path = loop {
+            let busy_timeout = Duration::from_millis(timeout_ms as u64);
+            let scan_timeout = busy_timeout * 2;
+            match random_file_with_timeout(roots, scan_timeout, busy_timeout) {
+                Some(path) => break path,
+                None => {
+                    eprintln!("No files found, increasing timeout");
+                    timeout_ms += 1000;
+                }
+            }
+        };
 
         if cache.insert_or_remove(path.clone()) {
             queue_tx.send(path).expect("Queue channel disconnected");

@@ -78,15 +78,18 @@
             root.classList.add('root')
             root.innerHTML = `
 <h2><a class="add" href="#">Add player</a> <a class="remove" href="#">Remove player</a></h2>
+<h3>Queue (<span class="queue-count"></span>) <a class="reset-queue" href="#">Reset queue</a></h3>
 <h2>Playing <span class="playing-text"></span></h2>
 <div class="container"></div>
 <button class="next">Next</button>`
 
             const playingText = root.querySelector('.playing-text')
+            const queueCountText = root.querySelector('.queue-count')
             const removeButton = root.querySelector('.remove')
             const addButton = root.querySelector('.add')
             const container = root.querySelector('.container')
             const nextButton = root.querySelector('.next')
+            const resetQueueButton = root.querySelector('.reset-queue')
 
             const removeEventListeners = () => {
                 if (active === null) {
@@ -125,7 +128,12 @@
 
                 removeEventListeners()
 
-                const path = await fetch('random').then(r => r.text())
+                const path = await fetch('random').then(response => {
+                    const queueCount = response.headers.get('x-queue-count')
+                    const queueSize = response.headers.get('x-queue-size')
+                    queueCountText.innerText = `${queueCount} / ${queueSize}`
+                    return response.text()
+                })
                 console.log(path)
 
                 stop()
@@ -203,13 +211,46 @@
             }
 
             nextButton.addEventListener('click', nextFile)
+            resetQueueButton.addEventListener('click', () => {
+                fetch('reset').then(getQueueInfo)
+            })
 
             document.body.appendChild(root)
             nextFile()
         }
 
+        async function getQueueInfo() {
+            const response = await fetch('queue')
+            const queueCount = response.headers.get('x-queue-count')
+            const queueSize = response.headers.get('x-queue-size')
+
+            for (const element of document.querySelectorAll('.queue-count')) {
+                element.innerText = `${queueCount} / ${queueSize}`
+            }
+        }
+
+        let queueInfoTimeout = null
+
+        function getQueueInfoPoll(timeout = 1) {
+            if (queueInfoTimeout !== null) {
+                return
+            }
+
+            queueInfoTimeout = setTimeout(() => {
+                getQueueInfo()
+                    .catch(error => console.warn("Error getting queue info:", error))
+                    .then(() => {
+                        queueInfoTimeout = null
+                        getQueueInfoPoll(500)
+                    })
+            }, timeout)
+
+
+        }
+
         document.addEventListener('DOMContentLoaded', () => {
             addPlayer()
+            getQueueInfoPoll()
         })
     </script>
 </head>

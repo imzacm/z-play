@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use eframe::egui;
 
-use crate::gstreamer_pipeline::Pipeline;
+use crate::pipeline::Pipeline;
 
 pub fn queue_ui(ui: &mut egui::Ui, queue: &mut VecDeque<Pipeline>) {
     let len = queue.len();

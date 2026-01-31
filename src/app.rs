@@ -1,16 +1,18 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use eframe::egui;
 use glib::clone::Downgrade;
 use keepawake::KeepAwake;
 use parking_lot::Mutex;
 
-use crate::gstreamer_pipeline::{Event, Pipeline};
 use crate::path_cache::PathCache;
+use crate::pipeline::{Event, Pipeline};
 use crate::playback_speed::PlaybackSpeed;
-use crate::random_files::random_file;
+use crate::random_files::random_file_with_timeout;
+use crate::ui::PipelineRecv;
 use crate::{Error, ui};
 
 const MAX_QUEUE_SIZE: usize = 20;
@@ -24,6 +26,7 @@ pub struct App {
     fullscreen: bool,
     playback_speed: PlaybackSpeed,
     keep_awake: Option<KeepAwake>,
+    pipeline_receivers: Vec<PipelineRecv>,
 }
 
 impl App {
@@ -41,6 +44,7 @@ impl App {
             fullscreen: false,
             playback_speed: PlaybackSpeed::default(),
             keep_awake: None,
+            pipeline_receivers: Vec::with_capacity(2),
         }
     }
 }
@@ -51,6 +55,14 @@ impl eframe::App for App {
             let queue = self.queue.downgrade();
             start_file_feeder(ctx, queue, self.root_paths.clone());
         }
+
+        self.pipeline_receivers.retain(|rx| {
+            if let Some(Err(error)) = rx.try_recv() {
+                self.error = Some(error);
+                return false;
+            }
+            !rx.is_disconnected()
+        });
 
         let mut load_next_file = self.player.pipeline().is_none();
 
@@ -107,10 +119,9 @@ impl eframe::App for App {
             });
 
             if self.playback_speed.rate() != self.player.rate()
-                && let Err(error) = self.player.set_rate(self.playback_speed.rate())
+                && let Some(rx) = self.player.set_rate(self.playback_speed.rate())
             {
-                self.error = Some(error);
-                ui.ctx().request_repaint();
+                self.pipeline_receivers.push(rx);
             }
 
             if toggle_fullscreen_button {
@@ -131,12 +142,13 @@ impl eframe::App for App {
         });
 
         if load_next_file && let Some(pipeline) = self.queue.lock().pop_front() {
-            if let Err(error) = pipeline.set_state(gstreamer::State::Playing) {
-                self.error = Some(error);
-                return;
-            }
+            let result_rx = pipeline.set_state(gstreamer::State::Playing);
+            self.pipeline_receivers.push(PipelineRecv::SetState(result_rx));
             self.player.clear();
             self.player.swap_pipeline(pipeline);
+            if let Some(rx) = self.player.set_rate(self.player.rate()) {
+                self.pipeline_receivers.push(rx);
+            }
         }
 
         // ctx.request_repaint();
@@ -245,6 +257,9 @@ fn pipeline_loop(
     ctx: egui::Context,
     root_paths: Arc<Mutex<Vec<PathBuf>>>,
     pipeline_tx: flume::Sender<Pipeline>,
+
+    // Used for dynamic timeout.
+    queue: Weak<Mutex<VecDeque<Pipeline>>>,
 ) {
     let mut cache = PathCache::default();
 
@@ -256,7 +271,21 @@ fn pipeline_loop(
 
         log::info!("Starting pipeline loop");
         let roots = root_paths.lock().clone();
-        let path = match random_file(roots) {
+
+        let queue_len = match queue.upgrade() {
+            Some(queue) => queue.lock().len(),
+            None => {
+                log::info!("Queue dropped, stopping pipeline loop");
+                break;
+            }
+        };
+
+        // Start at 100ms and scale up to 10s based on queue length.
+        let timeout_ms = 100 + (9900 * queue_len / MAX_QUEUE_SIZE);
+        let busy_timeout = Duration::from_millis(timeout_ms as u64);
+        let scan_timeout = busy_timeout * 2;
+
+        let path = match random_file_with_timeout(roots, scan_timeout, busy_timeout) {
             Some(path) => path,
             None => {
                 log::info!("No files found, stopping pipeline loop");
@@ -279,7 +308,8 @@ fn pipeline_loop(
             }
         };
 
-        if let Err(error) = pipeline.set_state(gstreamer::State::Paused) {
+        let result_rx = pipeline.set_state(gstreamer::State::Paused);
+        if let Err(error) = result_rx.recv().unwrap() {
             log::error!("Failed to set state for {}: {error}", path.display());
             continue;
         }
@@ -300,7 +330,8 @@ fn start_file_feeder(
 
     let (pipeline_tx, pipeline_rx) = flume::bounded(1);
     let ctx_clone = ctx.clone();
-    std::thread::spawn(move || pipeline_loop(ctx_clone, root_paths, pipeline_tx));
+    let queue_clone = queue.clone();
+    std::thread::spawn(move || pipeline_loop(ctx_clone, root_paths, pipeline_tx, queue_clone));
 
     let ctx_clone = ctx.clone();
     std::thread::spawn(move || pre_roll_loop(pipeline_rx, ctx_clone, queue));

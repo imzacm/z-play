@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
 use nanorand::Rng;
 use parking_lot::Mutex;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
