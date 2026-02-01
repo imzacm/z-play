@@ -63,6 +63,18 @@
             flex-shrink: 0;
             cursor: pointer;
         }
+
+        .nav {
+            display: flex;
+            flex-shrink: 0;
+            height: 10%;
+        }
+
+        .nav button {
+            width: auto;
+            height: 100%;
+            flex: 1 1 0;
+        }
     </style>
 
     <script>
@@ -81,7 +93,10 @@
 <h3>Queue (<span class="queue-count"></span>) <a class="reset-queue" href="#">Reset queue</a></h3>
 <h2>Playing <span class="playing-text"></span></h2>
 <div class="container"></div>
-<button class="prev">Previous</button><button class="next">Next</button>`
+<div class="nav">
+    <button class="prev">Previous</button>
+    <button class="next">Next</button>
+</div>`
 
             const playingText = root.querySelector('.playing-text')
             const queueCountText = root.querySelector('.queue-count')
