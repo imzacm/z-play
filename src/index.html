@@ -81,7 +81,7 @@
 <h3>Queue (<span class="queue-count"></span>) <a class="reset-queue" href="#">Reset queue</a></h3>
 <h2>Playing <span class="playing-text"></span></h2>
 <div class="container"></div>
-<button class="next">Next</button>`
+<button class="prev">Previous</button><button class="next">Next</button>`
 
             const playingText = root.querySelector('.playing-text')
             const queueCountText = root.querySelector('.queue-count')
@@ -89,6 +89,7 @@
             const addButton = root.querySelector('.add')
             const container = root.querySelector('.container')
             const nextButton = root.querySelector('.next')
+            const prevButton = root.querySelector('.prev')
             const resetQueueButton = root.querySelector('.reset-queue')
 
             const removeEventListeners = () => {
@@ -120,7 +121,14 @@
                 active = null
             }
 
-            const nextFile = async () => {
+            const history = []
+            let historyIndex = -1
+
+            const loadFile = async (next = true) => {
+                if (!next && (history.length === 0 || historyIndex === 0)) {
+                    return
+                }
+
                 if (loading) {
                     return
                 }
@@ -128,14 +136,27 @@
 
                 removeEventListeners()
 
-                const path = await fetch('random').then(response => {
-                    const queueCount = response.headers.get('x-queue-count')
-                    const queueSize = response.headers.get('x-queue-size')
-                    queueCountText.innerText = `${queueCount} / ${queueSize}`
-                    return response.text()
-                })
-                console.log(path)
+                let path
+                if (next) {
+                    if (history.length === 0 || historyIndex === history.length - 1) {
+                        path = await fetch('random').then(response => {
+                            const queueCount = response.headers.get('x-queue-count')
+                            const queueSize = response.headers.get('x-queue-size')
+                            queueCountText.innerText = `${queueCount} / ${queueSize}`
+                            return response.text()
+                        })
+                        history.push(path)
+                        historyIndex++
+                    } else {
+                        historyIndex++
+                        path = history[historyIndex]
+                    }
+                } else {
+                    historyIndex--
+                    path = history[historyIndex]
+                }
 
+                console.log(path)
                 stop()
 
                 const extension = path.split('.').pop().toLowerCase()
@@ -172,6 +193,9 @@
                     active.src = `files/${path}`
                 }
             }
+
+            const prevFile = () => loadFile(false)
+            const nextFile = () => loadFile(true)
 
             function onCanPlay() {
                 active.style.display = ''
@@ -210,6 +234,7 @@
                 container.appendChild(element)
             }
 
+            prevButton.addEventListener('click', prevFile)
             nextButton.addEventListener('click', nextFile)
             resetQueueButton.addEventListener('click', () => {
                 fetch('reset').then(getQueueInfo)
