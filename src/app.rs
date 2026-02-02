@@ -127,7 +127,6 @@ impl eframe::App for App {
             if toggle_fullscreen_button {
                 self.fullscreen = !self.fullscreen;
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
-                // ui.ctx().request_repaint();
             }
 
             let player_response = self.player.ui(ui, self.fullscreen);
@@ -150,8 +149,6 @@ impl eframe::App for App {
                 self.pipeline_receivers.push(rx);
             }
         }
-
-        // ctx.request_repaint();
 
         let playing = self.player.is_playing();
         if playing && self.keep_awake.is_none() {

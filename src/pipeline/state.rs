@@ -1,4 +1,4 @@
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub struct Frame {
     pub width: u32,
     pub height: u32,
@@ -8,7 +8,7 @@ pub struct Frame {
 
 #[derive(Default, Clone)]
 pub struct State {
-    pub frame: Option<Frame>,
+    pub frame: Frame,
     pub audio_buffer: Vec<f32>,
     pub duration: gstreamer::ClockTime,
     pub position: gstreamer::ClockTime,

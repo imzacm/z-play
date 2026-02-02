@@ -11,7 +11,6 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Router, middleware};
 use tower::ServiceBuilder;
-use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 use z_play::path_cache::PathCache;
@@ -43,7 +42,7 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
         .nest_service(
             "/files",
             ServiceBuilder::new()
-                .layer(CompressionLayer::new())
+                // .layer(CompressionLayer::new())
                 .layer(SetResponseHeaderLayer::if_not_present(
                     CACHE_CONTROL,
                     HeaderValue::from_static("public, max-age=31536000"),

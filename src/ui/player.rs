@@ -1,5 +1,9 @@
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 use eframe::egui;
 use eframe::egui::Widget;
+use parking_lot::Mutex;
 
 use crate::Error;
 use crate::pipeline::{Event, Pipeline};
@@ -41,6 +45,7 @@ pub struct PlayerUi {
     texture: Option<egui::TextureHandle>,
     rate: f64,
     last_cursor_moved: f64,
+    playing_text: String,
 }
 
 impl PlayerUi {
@@ -71,6 +76,9 @@ impl PlayerUi {
         P: Into<Option<Pipeline>>,
     {
         let pipeline = pipeline.into();
+        if let Some(pipeline) = &pipeline {
+            self.playing_text = format!("Playing: {}", pipeline.path().display());
+        }
         std::mem::replace(&mut self.pipeline, pipeline)
     }
 
@@ -82,7 +90,6 @@ impl PlayerUi {
         let mut response = Response { finished: false, error: None, pipeline_rx: None };
 
         let Some(pipeline) = &self.pipeline else { return response };
-        let path = pipeline.path();
 
         {
             let event_rx = pipeline.event_rx().clone();
@@ -100,7 +107,7 @@ impl PlayerUi {
                         // TODO: Play/pause text.
                         log::info!(
                             "Pipeline state changed {} - {from:?} -> {to:?}",
-                            path.display()
+                            pipeline.path().display()
                         );
                     }
                 }
@@ -116,16 +123,18 @@ impl PlayerUi {
         let show_ui = !fullscreen || (input_time - self.last_cursor_moved) < 1.0;
 
         if show_ui {
-            ui.label(format!("Playing: {}", path.display()));
+            ui.label(&self.playing_text);
         }
 
         let mut toggle_play_pause = ui.ctx().input(|i| i.key_released(egui::Key::Space));
 
-        if let Some(frame) = pipeline.frame().take() {
+        if let Some(mut frame) = pipeline.frame() {
             let image = egui::ColorImage::from_rgba_unmultiplied(
                 [frame.width as usize, frame.height as usize],
                 &frame.data,
             );
+
+            frame.data.clear();
 
             if let Some(texture) = &mut self.texture {
                 texture.set(image, egui::TextureOptions::LINEAR);
@@ -246,23 +255,38 @@ impl PlayerUi {
             }
         }
 
-        // ui.ctx().request_repaint();
         response
     }
 }
 
-fn display_clocktime(time: gstreamer::ClockTime, show_hours: bool) -> String {
-    let hours = time.hours();
-    let mut minutes = time.minutes();
+fn display_clocktime(time: gstreamer::ClockTime, show_hours: bool) -> &'static str {
+    static CACHE: LazyLock<Mutex<HashMap<(gstreamer::ClockTime, bool), String>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
 
-    if show_hours {
-        minutes %= 60;
-    }
+    let mut lock = CACHE.lock();
+    let str = lock.entry((time, show_hours)).or_insert_with(|| {
+        let hours = time.hours();
+        let mut minutes = time.minutes();
 
-    let seconds = time.seconds() % 60;
-    if show_hours {
-        format!("{hours:02}:{minutes:02}:{seconds:02}")
-    } else {
-        format!("{minutes:02}:{seconds:02}")
+        if show_hours {
+            minutes %= 60;
+        }
+
+        let seconds = time.seconds() % 60;
+        if show_hours {
+            format!("{hours:02}:{minutes:02}:{seconds:02}")
+        } else {
+            format!("{minutes:02}:{seconds:02}")
+        }
+    });
+
+    let bytes = str.as_bytes();
+
+    let ptr = bytes.as_ptr();
+    let len = bytes.len();
+
+    unsafe {
+        let bytes = std::slice::from_raw_parts(ptr, len);
+        std::str::from_utf8_unchecked(bytes)
     }
 }

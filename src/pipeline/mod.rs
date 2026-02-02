@@ -42,9 +42,13 @@ impl Pipeline {
         &self.path
     }
 
-    pub fn frame(&self) -> MappedMutexGuard<'_, Option<Frame>> {
+    pub fn frame(&self) -> Option<MappedMutexGuard<'_, Frame>> {
         let lock = self.state.lock();
-        MutexGuard::map(lock, |state| &mut state.frame)
+        if lock.frame.data.is_empty() {
+            None
+        } else {
+            Some(MutexGuard::map(lock, |state| &mut state.frame))
+        }
     }
 
     pub fn take_audio_buffer(&self) -> Vec<f32> {
@@ -199,12 +203,12 @@ where
                     .map_err(|_| gstreamer::FlowError::Error)?;
                 let map = buffer.map_readable().map_err(|_| gstreamer::FlowError::Error)?;
 
-                let frame =
-                    Frame { width: info.width(), height: info.height(), data: map.to_vec() };
-
                 {
                     let mut state_lock = state.lock();
-                    state_lock.frame = Some(frame);
+                    state_lock.frame.width = info.width();
+                    state_lock.frame.height = info.height();
+                    state_lock.frame.data.clear();
+                    state_lock.frame.data.extend_from_slice(map.as_slice());
 
                     if state_lock.duration == gstreamer::ClockTime::ZERO
                         && let Some(pipeline) = pipeline_weak.upgrade()
