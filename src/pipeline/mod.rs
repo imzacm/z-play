@@ -6,11 +6,11 @@ mod worker;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use eframe::egui;
 pub use event::Event;
 use glib::object::{Cast, ObjectExt};
 use gstreamer::prelude::{ElementExt, ElementExtManual, GstBinExt, GstBinExtManual, GstObjectExt};
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
-pub use state::Frame;
 use state::State;
 
 use crate::Error;
@@ -42,18 +42,9 @@ impl Pipeline {
         &self.path
     }
 
-    pub fn frame(&self) -> Option<MappedMutexGuard<'_, Frame>> {
+    pub fn frame(&self) -> MappedMutexGuard<'_, egui::ColorImage> {
         let lock = self.state.lock();
-        if lock.frame.data.is_empty() {
-            None
-        } else {
-            Some(MutexGuard::map(lock, |state| &mut state.frame))
-        }
-    }
-
-    pub fn take_audio_buffer(&self) -> Vec<f32> {
-        let mut lock = self.state.lock();
-        std::mem::take(&mut lock.audio_buffer)
+        MutexGuard::map(lock, |state| &mut state.frames[state.active_frame])
     }
 
     pub fn is_image(&self) -> bool {
@@ -203,12 +194,23 @@ where
                     .map_err(|_| gstreamer::FlowError::Error)?;
                 let map = buffer.map_readable().map_err(|_| gstreamer::FlowError::Error)?;
 
+                let mut image = {
+                    let mut lock = state.lock();
+                    std::mem::take(lock.inactive_frame_mut())
+                };
+
+                image.size = [info.width() as usize, info.height() as usize];
+                image.source_size = egui::Vec2::new(info.width() as f32, info.height() as f32);
+                image.pixels.clear();
+                image.pixels.extend(
+                    map.chunks_exact(4)
+                        .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])),
+                );
+
                 {
                     let mut state_lock = state.lock();
-                    state_lock.frame.width = info.width();
-                    state_lock.frame.height = info.height();
-                    state_lock.frame.data.clear();
-                    state_lock.frame.data.extend_from_slice(map.as_slice());
+                    *state_lock.inactive_frame_mut() = image;
+                    state_lock.swap_frames();
 
                     if state_lock.duration == gstreamer::ClockTime::ZERO
                         && let Some(pipeline) = pipeline_weak.upgrade()

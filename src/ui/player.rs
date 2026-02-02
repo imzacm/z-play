@@ -1,9 +1,5 @@
-use std::collections::HashMap;
-use std::sync::LazyLock;
-
 use eframe::egui;
 use eframe::egui::Widget;
-use parking_lot::Mutex;
 
 use crate::Error;
 use crate::pipeline::{Event, Pipeline};
@@ -128,20 +124,19 @@ impl PlayerUi {
 
         let mut toggle_play_pause = ui.ctx().input(|i| i.key_released(egui::Key::Space));
 
-        if let Some(mut frame) = pipeline.frame() {
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [frame.width as usize, frame.height as usize],
-                &frame.data,
-            );
-
-            frame.data.clear();
-
-            if let Some(texture) = &mut self.texture {
-                texture.set(image, egui::TextureOptions::LINEAR);
-            } else {
-                let texture =
-                    ui.ctx().load_texture("video-frame", image, egui::TextureOptions::LINEAR);
-                self.texture = Some(texture);
+        {
+            let image = pipeline.frame();
+            if !image.pixels.is_empty() {
+                if let Some(texture) = &mut self.texture {
+                    texture.set(image.clone(), egui::TextureOptions::LINEAR);
+                } else {
+                    let texture = ui.ctx().load_texture(
+                        "video-frame",
+                        image.clone(),
+                        egui::TextureOptions::LINEAR,
+                    );
+                    self.texture = Some(texture);
+                }
             }
         }
 
@@ -259,34 +254,18 @@ impl PlayerUi {
     }
 }
 
-fn display_clocktime(time: gstreamer::ClockTime, show_hours: bool) -> &'static str {
-    static CACHE: LazyLock<Mutex<HashMap<(gstreamer::ClockTime, bool), String>>> =
-        LazyLock::new(|| Mutex::new(HashMap::new()));
+fn display_clocktime(time: gstreamer::ClockTime, show_hours: bool) -> String {
+    let hours = time.hours();
+    let mut minutes = time.minutes();
 
-    let mut lock = CACHE.lock();
-    let str = lock.entry((time, show_hours)).or_insert_with(|| {
-        let hours = time.hours();
-        let mut minutes = time.minutes();
+    if show_hours {
+        minutes %= 60;
+    }
 
-        if show_hours {
-            minutes %= 60;
-        }
-
-        let seconds = time.seconds() % 60;
-        if show_hours {
-            format!("{hours:02}:{minutes:02}:{seconds:02}")
-        } else {
-            format!("{minutes:02}:{seconds:02}")
-        }
-    });
-
-    let bytes = str.as_bytes();
-
-    let ptr = bytes.as_ptr();
-    let len = bytes.len();
-
-    unsafe {
-        let bytes = std::slice::from_raw_parts(ptr, len);
-        std::str::from_utf8_unchecked(bytes)
+    let seconds = time.seconds() % 60;
+    if show_hours {
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
     }
 }
