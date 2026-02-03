@@ -143,7 +143,6 @@ impl eframe::App for App {
         if load_next_file && let Some(pipeline) = self.queue.lock().pop_front() {
             let result_rx = pipeline.set_state(gstreamer::State::Playing);
             self.pipeline_receivers.push(PipelineRecv::SetState(result_rx));
-            self.player.clear();
             self.player.swap_pipeline(pipeline);
             if let Some(rx) = self.player.set_rate(self.player.rate()) {
                 self.pipeline_receivers.push(rx);

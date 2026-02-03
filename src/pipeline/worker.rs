@@ -7,7 +7,7 @@ use std::sync::{Arc, LazyLock};
 
 use glib::object::ObjectExt;
 use gstreamer::MessageView;
-use gstreamer::prelude::{ElementExt, ElementExtManual};
+use gstreamer::prelude::{ElementExt, ElementExtManual, GstBinExt, PadExtManual};
 use parking_lot::Mutex;
 
 use super::Event;
@@ -70,6 +70,10 @@ impl PipelineHandle {
         WORKER_POOL.send(Command::Seek(self.id, time, rate, result_tx));
         result_rx
     }
+
+    pub fn set_video_size(&self, width: i32, height: i32) {
+        WORKER_POOL.send(Command::SetVideoSize(self.id, width, height));
+    }
 }
 
 impl Drop for PipelineHandle {
@@ -92,6 +96,7 @@ enum Command {
     RemovePipeline(PipelineId),
     SetState(PipelineId, gstreamer::State, flume::Sender<Result<(), gstreamer::StateChangeError>>),
     Seek(PipelineId, gstreamer::ClockTime, Option<f64>, flume::Sender<Result<(), glib::BoolError>>),
+    SetVideoSize(PipelineId, i32, i32),
 }
 
 struct WorkerPool<const N: usize> {
@@ -139,7 +144,9 @@ impl<const N: usize> WorkerPool<N> {
             Command::RemovePipeline(id) => {
                 self.pipeline_worker_map.lock().remove(id).expect("Pipeline not found")
             }
-            Command::SetState(id, _, _) | Command::Seek(id, _, _, _) => {
+            Command::SetState(id, _, _)
+            | Command::Seek(id, _, _, _)
+            | Command::SetVideoSize(id, _, _) => {
                 self.pipeline_worker_map.lock().get(id).copied().expect("Pipeline not found")
             }
         };
@@ -245,6 +252,40 @@ fn worker_thread(command_rx: flume::Receiver<Command>) {
                         )
                     };
                     _ = result_tx.send(result);
+                }
+                Ok(Command::SetVideoSize(id, width, height)) => {
+                    let map = map.borrow();
+                    let worker = map.get(&id).expect("Pipeline not found");
+
+                    let Some(caps_filter) = worker.pipeline.by_name("video_caps") else {
+                        log::warn!("video_caps not found; ignoring resize to {width}x{height}");
+                        continue;
+                    };
+
+                    let caps = gstreamer::Caps::builder("video/x-raw")
+                        .field("format", gstreamer_video::VideoFormat::Rgba.to_str())
+                        .field("pixel-aspect-ratio", gstreamer::Fraction::new(1, 1))
+                        .field("width", width)
+                        .field("height", height)
+                        .build();
+
+                    caps_filter.set_property("caps", &caps);
+
+                    // Force downstream renegotiation ASAP.
+                    if let Some(pad) = caps_filter.static_pad("src") {
+                        pad.send_event(gstreamer::event::Reconfigure::new());
+                    }
+
+                    // Force an immediate new output frame by flushing at the current position.
+                    if worker.pipeline.current_state() != gstreamer::State::Playing
+                        && let Some(position) =
+                            worker.pipeline.query_position::<gstreamer::ClockTime>()
+                    {
+                        _ = worker.pipeline.seek_simple(
+                            gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
+                            position,
+                        );
+                    }
                 }
                 Err(flume::RecvError::Disconnected) => break,
             }

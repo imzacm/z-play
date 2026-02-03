@@ -44,7 +44,7 @@ impl Pipeline {
 
     pub fn frame(&self) -> MappedMutexGuard<'_, egui::ColorImage> {
         let lock = self.state.lock();
-        MutexGuard::map(lock, |state| &mut state.frames[state.active_frame])
+        MutexGuard::map(lock, |state| state.active_frame_mut())
     }
 
     pub fn is_image(&self) -> bool {
@@ -82,6 +82,10 @@ impl Pipeline {
         }
 
         self.pipeline.seek(time, rate)
+    }
+
+    pub fn set_video_size(&self, width: i32, height: i32) {
+        self.pipeline.set_video_size(width, height);
     }
 }
 
@@ -277,18 +281,23 @@ fn create_video_bin() -> Result<(gstreamer::Bin, gstreamer_app::AppSink), Error>
 
     let convert = gstreamer::ElementFactory::make("videoconvert").build()?;
     let scale = gstreamer::ElementFactory::make("videoscale").build()?;
+
+    let initial_caps = gstreamer::Caps::builder("video/x-raw")
+        .field("format", gstreamer_video::VideoFormat::Rgba.to_str())
+        .field("pixel-aspect-ratio", gstreamer::Fraction::new(1, 1))
+        .build();
+    let caps = gstreamer::ElementFactory::make("capsfilter")
+        .name("video_caps")
+        .property("caps", &initial_caps)
+        .build()?;
     let app_sink = gstreamer_app::AppSink::builder()
         .drop(true)
         .max_buffers(1)
-        .caps(
-            &gstreamer::Caps::builder("video/x-raw")
-                .field("format", gstreamer_video::VideoFormat::Rgba.to_str())
-                .build(),
-        )
+        .caps(&initial_caps)
         .build();
 
-    bin.add_many([&convert, &scale, app_sink.upcast_ref()])?;
-    gstreamer::Element::link_many([&convert, &scale, app_sink.upcast_ref()])?;
+    bin.add_many([&convert, &scale, &caps, app_sink.upcast_ref()])?;
+    gstreamer::Element::link_many([&convert, &scale, &caps, app_sink.upcast_ref()])?;
 
     let sink_pad = convert.static_pad("sink").expect("no videoconvert sink pad");
     let ghost_pad = gstreamer::GhostPad::with_target(&sink_pad)?;

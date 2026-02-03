@@ -41,6 +41,9 @@ pub struct PlayerUi {
     texture: Option<egui::TextureHandle>,
     rate: f64,
     last_cursor_moved: f64,
+    last_target_video_size: Option<(i32, i32)>,
+    new_target_video_size: Option<(i32, i32)>,
+    new_target_video_size_changed_at: f64,
     playing_text: String,
 }
 
@@ -74,12 +77,18 @@ impl PlayerUi {
         let pipeline = pipeline.into();
         if let Some(pipeline) = &pipeline {
             self.playing_text = format!("Playing: {}", pipeline.path().display());
+            self.last_target_video_size = None;
+            self.new_target_video_size = None;
+            self.new_target_video_size_changed_at = 0.0;
         }
         std::mem::replace(&mut self.pipeline, pipeline)
     }
 
     pub fn clear(&mut self) {
         self.pipeline = None;
+        self.last_target_video_size = None;
+        self.new_target_video_size = None;
+        self.new_target_video_size_changed_at = 0.0;
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, fullscreen: bool) -> Response {
@@ -125,7 +134,7 @@ impl PlayerUi {
         let mut toggle_play_pause = ui.ctx().input(|i| i.key_released(egui::Key::Space));
 
         {
-            let image = pipeline.frame();
+            let mut image = pipeline.frame();
             if !image.pixels.is_empty() {
                 if let Some(texture) = &mut self.texture {
                     texture.set(image.clone(), egui::TextureOptions::LINEAR);
@@ -137,6 +146,8 @@ impl PlayerUi {
                     );
                     self.texture = Some(texture);
                 }
+
+                image.pixels.clear();
             }
         }
 
@@ -213,31 +224,70 @@ impl PlayerUi {
                 });
             });
 
-            ui.centered_and_justified(|ui| {
-                if let Some(texture) = &self.texture
-                    && self.pipeline.is_some()
-                {
-                    let video_size = texture.size();
-                    let video_size = egui::Vec2::new(video_size[0] as f32, video_size[1] as f32);
-                    let available_size = ui.available_size();
+            if let Some(texture) = &self.texture
+                && self.pipeline.is_some()
+            {
+                let video_size = texture.size();
+                let video_size = egui::Vec2::new(video_size[0] as f32, video_size[1] as f32);
+                let available_size = ui.available_size();
 
-                    let width_ratio = available_size.x / video_size.x;
-                    let height_ratio = available_size.y / video_size.y;
+                let width_ratio = available_size.x / video_size.x;
+                let height_ratio = available_size.y / video_size.y;
 
-                    let scale = width_ratio.min(height_ratio);
+                let scale = width_ratio.min(height_ratio);
 
-                    let target_size = video_size * scale;
+                let target_size = video_size * scale;
 
-                    let texture = egui::load::SizedTexture::new(texture.id(), target_size);
-                    let response = ui.add(egui::Image::new(texture).sense(egui::Sense::click()));
+                // Center the image horizontally inside the available width:
+                let full_width = ui.available_width();
+                let (outer_rect, outer_response) = ui.allocate_exact_size(
+                    egui::vec2(full_width, target_size.y),
+                    egui::Sense::click(),
+                );
 
-                    if response.clicked() {
-                        toggle_play_pause = true;
-                    }
-                } else {
-                    ui.spinner();
+                let image_rect =
+                    egui::Align2::CENTER_CENTER.align_size_within_rect(target_size, outer_rect);
+
+                let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                ui.painter().image(texture.id(), image_rect, uv, egui::Color32::WHITE);
+
+                // let texture = egui::load::SizedTexture::new(texture.id(), target_size);
+                // let response = ui.add(egui::Image::new(texture).sense(egui::Sense::click()));
+
+                if outer_response.clicked() {
+                    toggle_play_pause = true;
                 }
-            });
+
+                // Quantize + debounce: reduces “size-churn” during drags.
+                // let w = (target_size.x.round().max(2.0) as i32 / 8) * 8;
+                // let h = (target_size.y.round().max(2.0) as i32 / 8) * 8;
+
+                let w = target_size.x.round().max(2.0) as i32;
+                let h = target_size.y.round().max(2.0) as i32;
+                let target_size = (w, h);
+                if self.new_target_video_size != Some(target_size) {
+                    self.new_target_video_size = Some(target_size);
+                    self.new_target_video_size_changed_at = input_time;
+                }
+
+                if let Some(target_size) = self.new_target_video_size
+                    && self.last_target_video_size != Some(target_size)
+                {
+                    // Only apply resize after it has been stable for 200ms.
+                    let since_changed = input_time - self.new_target_video_size_changed_at;
+                    if since_changed >= 0.20 {
+                        pipeline.set_video_size(target_size.0, target_size.1);
+                        self.last_target_video_size = Some(target_size);
+                    } else {
+                        let duration = std::time::Duration::from_secs_f64(since_changed);
+                        ui.ctx().request_repaint_after(duration);
+                    }
+                }
+            } else {
+                ui.centered_and_justified(|ui| {
+                    ui.spinner();
+                });
+            }
         });
 
         if toggle_play_pause {
