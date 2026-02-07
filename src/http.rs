@@ -20,6 +20,14 @@ const QUEUE_SIZE: usize = 1000;
 const QUEUE_COUNT_HEADER: HeaderName = HeaderName::from_static("x-queue-count");
 const QUEUE_SIZE_HEADER: HeaderName = HeaderName::from_static("x-queue-size");
 
+// Pre-cache tuning:
+// - Read up to this many bytes per queued file. Good default for mixed media: 4–16 MiB.
+//
+// 8 MiB
+const PRECACHE_READ_BYTES: u64 = 8 * 1024 * 1024;
+// 1 MiB
+const PRECACHE_CHUNK_BYTES: usize = 1024 * 1024;
+
 static ROOTS: OnceLock<Vec<PathBuf>> = OnceLock::new();
 static QUEUE_RX: OnceLock<flume::Receiver<PathBuf>> = OnceLock::new();
 
@@ -83,6 +91,8 @@ async fn random_path_handler() -> impl IntoResponse {
     let path = queue_rx.recv_async().await.expect("Queue channel disconnected");
     let path_str = path.to_str().expect("Only UTF-8 paths are supported");
 
+    _ = precache_file(&path).await;
+
     (
         [
             (CACHE_CONTROL, "no-cache, no-store, must-revalidate"),
@@ -141,4 +151,28 @@ fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
             queue_tx.send(path).expect("Queue channel disconnected");
         }
     }
+}
+
+async fn precache_file(path: &Path) -> Result<(), std::io::Error> {
+    use tokio::io::AsyncReadExt;
+
+    eprintln!("Pre-caching file: {}", path.display());
+
+    let mut file = tokio::fs::File::open(path).await?;
+
+    let mut remaining = PRECACHE_READ_BYTES;
+    let mut buffer = vec![0u8; PRECACHE_CHUNK_BYTES];
+
+    while remaining != 0 {
+        match file.read(&mut buffer).await {
+            Ok(0) => break,
+            Ok(n) => remaining = remaining.saturating_sub(n as u64),
+            Err(error) => {
+                eprintln!("Failed to read file {}: {error}", path.display());
+                return Err(error);
+            }
+        }
+    }
+    eprintln!("Pre-cached file: {}", path.display());
+    Ok(())
 }
