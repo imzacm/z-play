@@ -29,7 +29,8 @@ const PRECACHE_READ_BYTES: u64 = 8 * 1024 * 1024;
 const PRECACHE_CHUNK_BYTES: usize = 1024 * 1024;
 
 static ROOTS: OnceLock<Vec<PathBuf>> = OnceLock::new();
-static QUEUE_RX: OnceLock<flume::Receiver<PathBuf>> = OnceLock::new();
+static QUEUE_CHANNEL: OnceLock<(flume::Sender<PathBuf>, flume::Receiver<PathBuf>)> =
+    OnceLock::new();
 
 pub fn start_server(port: u16, roots: Vec<PathBuf>) {
     tokio::runtime::Builder::new_multi_thread()
@@ -65,7 +66,7 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
             true
         }
         Err(error) => {
-            eprintln!("Removing invalid root \"{}\": {error}", root.display());
+            println!("Removing invalid root \"{}\": {error}", root.display());
             false
         }
     });
@@ -73,7 +74,8 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
     ROOTS.get_or_init(move || roots);
 
     let (queue_tx, queue_rx) = flume::bounded(QUEUE_SIZE);
-    QUEUE_RX.get_or_init(move || queue_rx);
+    let queue_tx_clone = queue_tx.clone();
+    QUEUE_CHANNEL.get_or_init(move || (queue_tx_clone, queue_rx));
     std::thread::spawn(move || queue_feeder(queue_tx));
 
     let address = SocketAddr::from(([0, 0, 0, 0], port));
@@ -87,11 +89,23 @@ async fn root_handler() -> Html<&'static str> {
 }
 
 async fn random_path_handler() -> impl IntoResponse {
-    let queue_rx = QUEUE_RX.get().unwrap();
-    let path = queue_rx.recv_async().await.expect("Queue channel disconnected");
-    let path_str = path.to_str().expect("Only UTF-8 paths are supported");
+    let (queue_tx, queue_rx) = QUEUE_CHANNEL.get().unwrap();
+    let path = loop {
+        let path = queue_rx.recv_async().await.expect("Queue channel disconnected");
+        let future = precache_file(&path);
+        match tokio::time::timeout(Duration::from_millis(100), future).await {
+            Ok(Ok(())) => break path,
+            Ok(Err(_)) => (),
+            Err(_) => {
+                println!("Pre-caching file {} timed out", path.display());
+                tokio::spawn(async move {
+                    queue_tx.send_async(path).await.expect("Queue channel disconnected");
+                });
+            }
+        }
+    };
 
-    _ = precache_file(&path).await;
+    let path_str = path.to_str().expect("Only UTF-8 paths are supported");
 
     (
         [
@@ -108,12 +122,12 @@ async fn random_path_handler() -> impl IntoResponse {
 }
 
 async fn queue_info() -> impl IntoResponse {
-    let queue_rx = QUEUE_RX.get().unwrap();
+    let (_, queue_rx) = QUEUE_CHANNEL.get().unwrap();
     [(QUEUE_COUNT_HEADER, queue_rx.len().to_string()), (QUEUE_SIZE_HEADER, QUEUE_SIZE.to_string())]
 }
 
 async fn reset_queue_handler() -> impl IntoResponse {
-    for _ in QUEUE_RX.get().unwrap().try_iter() {}
+    for _ in QUEUE_CHANNEL.get().unwrap().1.try_iter() {}
     StatusCode::NO_CONTENT
 }
 
@@ -141,7 +155,7 @@ fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
             match random_file_with_timeout(roots, scan_timeout, busy_timeout) {
                 Some(path) => break path,
                 None => {
-                    eprintln!("No files found, increasing timeout");
+                    println!("No files found, increasing timeout");
                     timeout_ms += 1000;
                 }
             }
@@ -156,7 +170,7 @@ fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
 async fn precache_file(path: &Path) -> Result<(), std::io::Error> {
     use tokio::io::AsyncReadExt;
 
-    eprintln!("Pre-caching file: {}", path.display());
+    println!("Pre-caching file: {}", path.display());
 
     let mut file = tokio::fs::File::open(path).await?;
 
@@ -168,11 +182,11 @@ async fn precache_file(path: &Path) -> Result<(), std::io::Error> {
             Ok(0) => break,
             Ok(n) => remaining = remaining.saturating_sub(n as u64),
             Err(error) => {
-                eprintln!("Failed to read file {}: {error}", path.display());
+                println!("Failed to read file {}: {error}", path.display());
                 return Err(error);
             }
         }
     }
-    eprintln!("Pre-cached file: {}", path.display());
+    println!("Pre-cached file: {}", path.display());
     Ok(())
 }
