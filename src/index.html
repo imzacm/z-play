@@ -75,6 +75,23 @@
             height: 100%;
             flex: 1 1 0;
         }
+
+        .loading {
+            width: 0.8em;
+            height: 0.8em;
+            border: 2px solid rgba(0, 0, 0, 0.1);
+            border-left-color: #3498db; /* The accent color */
+            border-radius: 50%;
+            display: inline-block;
+            vertical-align: middle;
+            margin-left: 10px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 
     <script>
@@ -90,7 +107,7 @@
             root.classList.add('root')
             root.innerHTML = `
 <h2><a class="add" href="#">Add player</a> <a class="remove" href="#">Remove player</a></h2>
-<h3>Queue (<span class="queue-count"></span>) <a class="reset-queue" href="#">Reset queue</a></h3>
+<h3>Queue (<span class="queue-count"></span>) <a class="reset-queue" href="#">Reset queue</a> <span class="loading" aria-hidden="true"></span></h3>
 <h2>Playing <span class="playing-text"></span></h2>
 <div class="container"></div>
 <div class="nav">
@@ -106,6 +123,12 @@
             const nextButton = root.querySelector('.next')
             const prevButton = root.querySelector('.prev')
             const resetQueueButton = root.querySelector('.reset-queue')
+            const loadingSpinner = root.querySelector('.loading')
+
+            const setLoading = value => {
+                loading = value
+                loadingSpinner.style.display = loading ? '' : 'none'
+            }
 
             const removeEventListeners = () => {
                 if (active === null) {
@@ -147,7 +170,7 @@
                 if (loading) {
                     return
                 }
-                loading = true
+                setLoading(true)
 
                 removeEventListeners()
 
@@ -188,7 +211,7 @@
                     active = audio
                 } else {
                     console.error(`Unsupported file extension: ${extension}`)
-                    loading = false
+                    setLoading(false)
                     setTimeout(nextFile, 1)
                     return
                 }
@@ -214,19 +237,19 @@
 
             function onCanPlay() {
                 active.style.display = ''
-                loading = false
+                setLoading(false)
                 this.play().catch(error => console.warn("Autoplay blocked:", error))
             }
 
             const onError = event => {
                 console.error('Error playing ' + playingText.innerText, event)
-                loading = false
+                setLoading(false)
                 nextFile()
             }
 
             const onLoad = () => {
                 active.style.display = ''
-                loading = false
+                setLoading(false)
             }
 
             // TODO: Add countdown for images and call onEnded.
