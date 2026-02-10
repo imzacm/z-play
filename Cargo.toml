@@ -28,7 +28,7 @@ rfd = "0.17"
 keepawake = "0.6"
 
 # HTTP Server
-tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "net"] }
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "parking_lot", "net"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["fs", "compression-full", "set-header"] }
 axum = "0.8"
