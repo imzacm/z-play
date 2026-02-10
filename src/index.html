@@ -89,13 +89,22 @@
         }
 
         @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+            0% {
+                transform: rotate(0deg);
+            }
+            100% {
+                transform: rotate(360deg);
+            }
         }
     </style>
 
     <script>
+        let playerCount = 0
+
         function addPlayer() {
+            const playerNumber = ++playerCount
+            const abortController = new AbortController()
+
             const image = document.createElement('img')
             const video = document.createElement('video')
             const audio = document.createElement('audio')
@@ -177,7 +186,7 @@
                 let path
                 if (next) {
                     if (history.length === 0 || historyIndex === history.length - 1) {
-                        path = await fetch('random').then(response => {
+                        path = await fetch('random', {signal: abortController.signal}).then(response => {
                             const queueCount = response.headers.get('x-queue-count')
                             const queueSize = response.headers.get('x-queue-size')
                             queueCountText.innerText = `${queueCount} / ${queueSize}`
@@ -260,6 +269,11 @@
             }
 
             removeButton.addEventListener('click', () => {
+                if (playerCount === 1) {
+                    return
+                }
+                playerCount--
+                abortController.abort('Player removed')
                 stop()
                 document.body.removeChild(root)
             })
@@ -268,7 +282,7 @@
 
             for (const element of [image, video, audio]) {
                 element.style.display = 'none'
-                if (element !== this.image) {
+                if (element !== image) {
                     element.controls = true
                 }
                 container.appendChild(element)
@@ -277,7 +291,7 @@
             prevButton.addEventListener('click', prevFile)
             nextButton.addEventListener('click', nextFile)
             resetQueueButton.addEventListener('click', () => {
-                fetch('reset').then(getQueueInfo)
+                fetch('reset', {signal: abortController.signal}).then(getQueueInfo)
             })
 
             document.body.appendChild(root)
