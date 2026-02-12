@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use nanorand::Rng;
 use parking_lot::Mutex;
+use rand::RngExt;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
 pub fn random_file<R>(roots: R) -> Option<PathBuf>
@@ -118,8 +118,8 @@ fn reduce_scan_result(mut a: ScanResult<PathBuf>, b: ScanResult<PathBuf>) -> Sca
 
     // Weighted random choice to decide which "selected" item to keep.
     // Choose 'a's sample with probability a.count / total_count
-    let mut rng = nanorand::tls_rng();
-    if rng.generate_range(0..total_count) < a.count {
+    let mut rng = rand::rng();
+    if rng.random_range(0..total_count) < a.count {
         a.count = total_count;
         a
     } else {

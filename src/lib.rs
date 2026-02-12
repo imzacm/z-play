@@ -1,26 +1,15 @@
 #![deny(unused_imports, clippy::all)]
 
-use eframe::egui;
-
+#[cfg(feature = "app")]
 pub mod app;
 pub mod path_cache;
+#[cfg(feature = "app")]
 pub mod pipeline;
+#[cfg(feature = "app")]
 pub mod playback_speed;
 pub mod random_files;
+#[cfg(feature = "app")]
 pub mod ui;
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error(transparent)]
-    EguiLoad(#[from] egui::load::LoadError),
-
-    #[error("{0}")]
-    Any(String),
-
-    #[error(transparent)]
-    Glib(#[from] glib::Error),
-    #[error(transparent)]
-    GlibBool(#[from] glib::BoolError),
-    #[error(transparent)]
-    StateChange(#[from] gstreamer::StateChangeError),
-}
+#[cfg(feature = "app")]
+pub use app::Error;

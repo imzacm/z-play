@@ -12,11 +12,26 @@ use crate::path_cache::PathCache;
 use crate::pipeline::{Event, Pipeline};
 use crate::playback_speed::PlaybackSpeed;
 use crate::random_files::random_file_with_timeout;
-use crate::ui::PipelineRecv;
-use crate::{Error, ui};
+use crate::ui::{self, PipelineRecv};
 
 const MAX_QUEUE_SIZE: usize = 20;
 const MAX_PRE_ROLL_QUEUE_SIZE: usize = 10;
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error(transparent)]
+    EguiLoad(#[from] egui::load::LoadError),
+
+    #[error("{0}")]
+    Any(String),
+
+    #[error(transparent)]
+    Glib(#[from] glib::Error),
+    #[error(transparent)]
+    GlibBool(#[from] glib::BoolError),
+    #[error(transparent)]
+    StateChange(#[from] gstreamer::StateChangeError),
+}
 
 pub struct App {
     root_paths: Arc<Mutex<Vec<PathBuf>>>,

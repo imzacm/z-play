@@ -62,6 +62,7 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
 
     roots.retain_mut(|root| match root.canonicalize() {
         Ok(path) => {
+            println!("Adding root: {}", path.display());
             *root = path;
             true
         }
@@ -143,6 +144,7 @@ async fn validate_path_middleware(request: Request, next: Next) -> Result<Respon
 }
 
 fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
+    println!("Starting queue feeder");
     let roots = ROOTS.get().unwrap();
     let mut cache = PathCache::default();
     loop {
