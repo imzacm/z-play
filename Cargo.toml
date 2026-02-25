@@ -23,10 +23,10 @@ jwalk = "0.8"
 flume = { version = "0.12", features = ["async"] }
 parking_lot = "0.12"
 
-glib = { version = "0.21", optional = true }
-gstreamer = { version = "0.24", optional = true }
-gstreamer-app = { version = "0.24", optional = true }
-gstreamer-video = { version = "0.24", optional = true }
+glib = { version = "0.22", optional = true }
+gstreamer = { version = "0.25", optional = true }
+gstreamer-app = { version = "0.25", optional = true }
+gstreamer-video = { version = "0.25", optional = true }
 
 eframe = { version = "0.33", optional = true }
 rfd = { version = "0.17", optional = true }
