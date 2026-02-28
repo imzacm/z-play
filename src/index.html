@@ -11,16 +11,15 @@
         }
 
         .root {
-            flex: 1 1 auto;
+            flex: 1 1 auto; /* Default: grow to fill space */
             display: flex;
             flex-direction: column;
             min-height: 0;
-            max-height: 100%;
-            min-width: 10%;
-            max-width: 100%;
-            width: 30%;
+            /* Remove the hardcoded 30% width from your original CSS */
+            width: auto;
             border: 1px solid #333;
             box-sizing: border-box;
+            overflow: hidden;
         }
 
         .container {
@@ -82,9 +81,10 @@
         .players-container {
             display: flex;
             flex-wrap: wrap;
-            align-content: stretch;
-            flex: 1; /* Forces this container to take up all space below the header */
+            align-content: stretch; /* Ensures items fill vertical space if wrapped */
+            flex: 1;
             min-height: 0;
+            width: 100%;
         }
 
         .queue-header {
@@ -204,6 +204,9 @@
 
         let playerCountText
         let addPlayerButton
+
+        let layoutMode
+        let layoutCount
 
         function addPlayer() {
             const playerNumber = ++playerCount
@@ -404,6 +407,8 @@
                         element.style.display = 'none'
                     }
                 }
+
+                updateLayout()
             })
 
             for (const element of [image, video, audio]) {
@@ -424,6 +429,9 @@
             })
 
             playersContainer.appendChild(root)
+
+            nextFile()
+
             playerCountText.innerText = playerCount.toString()
 
             if (playerCount > 1) {
@@ -432,7 +440,7 @@
                 }
             }
 
-            nextFile()
+            updateLayout()
         }
 
         async function getQueueInfo() {
@@ -465,6 +473,26 @@
 
         }
 
+        function updateLayout() {
+            const mode = layoutMode.value
+            let count = parseInt(layoutCount.value) || 1
+            count = Math.min(count, playerCount)
+
+            // Set the direction on the container
+            playersContainer.style.flexDirection = mode === 'horizontal' ? 'row' : 'column'
+
+            for (const player of document.querySelectorAll('.root')) {
+                // flex-grow: 1 (first value) lets players stretch to fill their current row/column.
+                // flex-basis (third value) forces a wrap once the limit is hit.
+                player.style.flex = `1 1 calc(100% / ${count})`
+
+                // Clear any hardcoded cross-axis sizes.
+                // Your existing CSS 'align-content: stretch' handles dividing the screen evenly!
+                player.style.width = ''
+                player.style.height = ''
+            }
+        }
+
         document.addEventListener('DOMContentLoaded', () => {
             queueCountText = document.querySelector('.queue-count')
             resetQueueButton = document.querySelector('.reset-queue')
@@ -477,6 +505,9 @@
             playerCountText = document.querySelector('.player-count')
             addPlayerButton = document.querySelector('.add-player')
 
+            layoutMode = document.querySelector('.layout-mode')
+            layoutCount = document.querySelector('.layout-count')
+
             resetQueueButton.addEventListener('click', event => {
                 event.preventDefault()
                 fetch('reset').then(getQueueInfo)
@@ -486,6 +517,9 @@
                 event.preventDefault()
                 addPlayer()
             })
+
+            layoutMode.addEventListener('change', updateLayout);
+            layoutCount.addEventListener('input', updateLayout);
 
             addPlayer()
             getQueueInfoPoll()
@@ -499,6 +533,18 @@
         <label><input type="checkbox" class="filter-image" checked> Image</label>
         <label><input type="checkbox" class="filter-video" checked> Video</label>
         <label><input type="checkbox" class="filter-audio" checked> Audio</label>
+
+        <div class="layout-controls"
+             style="display: flex; gap: 10px; align-items: center; border-left: 1px solid #ccc; padding-left: 10px;">
+            <label>Mode:
+                <select class="layout-mode">
+                    <option value="horizontal">Columns</option>
+                    <option value="vertical">Rows</option>
+                </select>
+            </label>
+            <label>Count: <input type="number" class="layout-count" value="3" min="1" max="10"
+                                 style="width: 40px;"></label>
+        </div>
     </div>
     <h3>Players (<span class="player-count"></span>) <a class="add-player" href="#">Add Player</a></h3>
 </div>
