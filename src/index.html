@@ -181,6 +181,29 @@
         h2 {
             margin: 0;
         }
+
+        .progress-bar-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.2);
+            z-index: 10;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            width: 0%;
+            background: #3498db;
+            /* Using linear timing for a steady countdown feel */
+            transition: width linear;
+        }
+
+        /* Ensure the container is positioned relatively so the bar stays inside */
+        .container {
+            position: relative;
+        }
     </style>
 
     <script>
@@ -221,7 +244,11 @@
     </h2>
     <h2 class="controls"><a class="remove" href="#">Remove player</a></h2>
 </div>
-<div class="container"></div>
+<div class="container">
+    <div class="progress-bar-container" style="display: none;">
+        <div class="progress-bar-fill"></div>
+    </div>
+</div>
 <div class="nav">
     <button class="prev">Previous</button>
     <button class="next">Next</button>
@@ -238,6 +265,9 @@
             const loopCountText = root.querySelector('.loop-count')
             let loopCount = 0
             let imageTimeout = null
+
+            const progressBarContainer = root.querySelector('.progress-bar-container')
+            const progressBarFill = root.querySelector('.progress-bar-fill')
 
             if (playerCount === 1) {
                 removeButton.style.display = 'none'
@@ -261,10 +291,45 @@
                 }
             }
 
+            const startImageTimer = () => {
+                clearTimeout(imageTimeout)
+
+                // Reset progress bar state
+                progressBarContainer.style.display = 'none'
+                progressBarFill.style.transition = 'none'
+                progressBarFill.style.width = '0%'
+
+                const isDurationEnabled = document.querySelector('.opt-img-duration-enabled').checked
+                const duration = parseInt(document.querySelector('.opt-img-duration').value)
+                const isAutoSkip = document.querySelector('.opt-autoskip').checked
+                const isLoop = document.querySelector('.opt-loop').checked
+
+                if (isDurationEnabled && !isNaN(duration) && duration > 0 && (isAutoSkip || isLoop)) {
+                    progressBarContainer.style.display = 'block'
+
+                    // Small timeout to allow the 'transition: none' and 'width: 0' to register
+                    // before we start the animation
+                    setTimeout(() => {
+                        progressBarFill.style.transition = `width ${duration}s linear`
+                        progressBarFill.style.width = '100%'
+                    }, 50)
+
+                    imageTimeout = setTimeout(() => {
+                        onEnded()
+                    }, duration * 1000)
+                }
+            }
+
             const stop = () => {
-                if (active === null) return
+                if (active === null) {
+                    return
+                }
                 removeEventListeners()
-                clearTimeout(imageTimeout) // Stop image timer if manually skipped
+                clearTimeout(imageTimeout)
+
+                // Hide progress bar on stop/switch
+                progressBarContainer.style.display = 'none'
+                progressBarFill.style.width = '0%'
 
                 if (active.tagName === 'VIDEO' || active.tagName === 'AUDIO') {
                     active.pause()
@@ -273,19 +338,6 @@
                 }
                 active.style.display = 'none'
                 active = null
-            }
-
-            const startImageTimer = () => {
-                clearTimeout(imageTimeout)
-                const duration = parseInt(document.querySelector('.opt-img-duration').value)
-                const isAutoSkip = document.querySelector('.opt-autoskip').checked
-                const isLoop = document.querySelector('.opt-loop').checked
-
-                if (!isNaN(duration) && duration > 0 && (isAutoSkip || isLoop)) {
-                    imageTimeout = setTimeout(() => {
-                        onEnded() // Treat image timeout exactly like a video ending
-                    }, duration * 1000)
-                }
             }
 
             const history = []
@@ -593,6 +645,13 @@
                 }
             })
         })
+
+        const imgDurationCheck = document.querySelector('.opt-img-duration-enabled')
+        const imgDurationInput = document.querySelector('.opt-img-duration')
+
+        imgDurationCheck.addEventListener('change', event => {
+            imgDurationInput.disabled = !event.target.checked
+        })
     </script>
 </head>
 <body>
@@ -637,10 +696,14 @@
                 <label><input type="checkbox" class="opt-autoplay" checked> Auto play</label>
                 <label><input type="checkbox" class="opt-autoskip" checked> Auto skip</label>
                 <label><input type="checkbox" class="opt-loop"> Loop</label>
-                <label style="margin-top: 10px; display: block;">Image duration (s): <br>
+
+                <div style="margin-top: 15px;">
+                    <label style="margin-bottom: 5px;">
+                        <input type="checkbox" class="opt-img-duration-enabled" checked> Auto-skip images after (s):
+                    </label>
                     <input type="number" class="opt-img-duration" value="5" min="1"
-                           style="width: 60px; margin-top: 5px;">
-                </label>
+                           style="width: 60px; margin-left: 24px;">
+                </div>
             </div>
         </fieldset>
     </div>
