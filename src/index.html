@@ -91,92 +91,65 @@
             width: 100%;
         }
 
-        /* --- Mobile-First Layout (Cover Screen) --- */
+        /* Clean header layout */
         .queue-header {
             display: flex;
-            flex-direction: column; /* Stacks the H3s and the middle-controls vertically */
-            align-items: flex-start;
-            gap: 12px;
-            padding: 10px 5px;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
             width: 100%;
             box-sizing: border-box;
             flex-shrink: 0;
+            gap: 10px;
         }
 
         .queue-header h3 {
             margin: 0;
             font-size: 0.9rem;
-            width: 100%;
-            white-space: normal;
         }
 
-        .queue-header h3 a {
-            margin-left: 15px;
+        /* Native Dialog Styling */
+        dialog {
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 0;
+            background: #fff;
+            max-width: 90vw;
+            width: 320px;
         }
 
-        /* This puts filters and layout controls side-by-side on the cover screen */
-        .middle-controls {
+        dialog::backdrop {
+            background: rgba(0, 0, 0, 0.6); /* Darkens the background */
+        }
+
+        .modal-content {
             display: flex;
-            flex-direction: row;
-            flex-wrap: wrap;
+            flex-direction: column;
+            gap: 15px;
+            padding: 15px;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
             align-items: center;
-            gap: 15px; /* Space between filters and layout inputs */
-            width: 100%;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
         }
 
-        .filters {
-            display: flex;
-            flex-direction: row;
-            gap: 10px;
-            font-size: 0.85rem;
+        .modal-section {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 10px;
+            margin: 0;
         }
 
-        .layout-controls {
-            display: flex;
-            flex-direction: row;
-            gap: 10px;
-            align-items: center;
-            font-size: 0.85rem;
-        }
-
-        .filters label, .layout-controls label {
+        .playback-controls label {
             display: flex;
             align-items: center;
             cursor: pointer;
-            white-space: nowrap; /* Prevents text like "Image" or "Mode:" from breaking into two lines */
-        }
-
-
-        /* --- Desktop & Inner Fold Screen Layout --- */
-        @media (min-width: 800px) {
-            .queue-header {
-                flex-direction: row; /* Puts H3s and middle-controls on one main line */
-                align-items: center;
-                justify-content: space-between;
-            }
-
-            .queue-header h3 {
-                width: auto;
-                white-space: nowrap;
-            }
-
-            .queue-header h3:first-of-type {
-                flex: 1 1 0;
-            }
-
-            .queue-header h3:last-of-type {
-                flex: 1 1 0;
-                text-align: right;
-            }
-
-            /* This stacks the filters ABOVE the layout controls on the wider screen */
-            .middle-controls {
-                flex: 0 1 auto;
-                flex-direction: column;
-                align-items: center;
-                gap: 6px;
-                width: auto;
-            }
+            margin-bottom: 5px;
+            font-size: 0.85rem;
         }
 
         /* Container for the top labels */
@@ -241,7 +214,11 @@
             root.classList.add('root')
             root.innerHTML = `
 <div class="player-header">
-    <h2 class="playing-info">Playing <span class="playing-text"></span> <span class="loading" aria-hidden="true" style="display: none;"></span></h2>
+    <h2 class="playing-info">
+        Playing <span class="playing-text"></span>
+        <span class="loop-info" style="display: none; color: #888;">(Loop: <span class="loop-count">0</span>)</span>
+        <span class="loading" aria-hidden="true" style="display: none;"></span>
+    </h2>
     <h2 class="controls"><a class="remove" href="#">Remove player</a></h2>
 </div>
 <div class="container"></div>
@@ -256,6 +233,11 @@
             const nextButton = root.querySelector('.next')
             const prevButton = root.querySelector('.prev')
             const loadingSpinner = root.querySelector('.loading')
+
+            const loopInfo = root.querySelector('.loop-info')
+            const loopCountText = root.querySelector('.loop-count')
+            let loopCount = 0
+            let imageTimeout = null
 
             if (playerCount === 1) {
                 removeButton.style.display = 'none'
@@ -280,11 +262,9 @@
             }
 
             const stop = () => {
-                if (active === null) {
-                    return
-                }
-
+                if (active === null) return
                 removeEventListeners()
+                clearTimeout(imageTimeout) // Stop image timer if manually skipped
 
                 if (active.tagName === 'VIDEO' || active.tagName === 'AUDIO') {
                     active.pause()
@@ -293,6 +273,19 @@
                 }
                 active.style.display = 'none'
                 active = null
+            }
+
+            const startImageTimer = () => {
+                clearTimeout(imageTimeout)
+                const duration = parseInt(document.querySelector('.opt-img-duration').value)
+                const isAutoSkip = document.querySelector('.opt-autoskip').checked
+                const isLoop = document.querySelector('.opt-loop').checked
+
+                if (!isNaN(duration) && duration > 0 && (isAutoSkip || isLoop)) {
+                    imageTimeout = setTimeout(() => {
+                        onEnded() // Treat image timeout exactly like a video ending
+                    }, duration * 1000)
+                }
             }
 
             const history = []
@@ -344,6 +337,12 @@
                 }
 
                 console.log(path)
+
+                // Reset loop tracking on new file
+                loopCount = 0
+                loopCountText.innerText = loopCount.toString()
+                loopInfo.style.display = document.querySelector('.opt-loop').checked ? 'inline' : 'none'
+
                 stop()
 
                 const extension = path.split('.').pop().toLowerCase()
@@ -389,7 +388,9 @@
             function onCanPlay() {
                 active.style.display = ''
                 setLoading(false)
-                this.play().catch(error => console.warn("Autoplay blocked:", error))
+                if (document.querySelector('.opt-autoplay').checked) {
+                    this.play().catch(error => console.warn("Autoplay blocked:", error))
+                }
             }
 
             const onError = event => {
@@ -401,11 +402,28 @@
             const onLoad = () => {
                 active.style.display = ''
                 setLoading(false)
+                if (active === image) {
+                    startImageTimer()
+                }
             }
 
-            // TODO: Add countdown for images and call onEnded.
             const onEnded = () => {
-                nextFile()
+                const isLoop = document.querySelector('.opt-loop').checked
+                const isAutoSkip = document.querySelector('.opt-autoskip').checked
+
+                if (isLoop) {
+                    loopCount++
+                    loopCountText.innerText = loopCount.toString()
+
+                    if (active === image) {
+                        startImageTimer() // Restart the countdown
+                    } else {
+                        active.currentTime = 0
+                        active.play().catch(error => console.warn("Autoplay blocked:", error))
+                    }
+                } else if (isAutoSkip) {
+                    nextFile()
+                }
             }
 
             removeButton.addEventListener('click', event => {
@@ -548,32 +566,85 @@
 
             addPlayer()
             getQueueInfoPoll()
+
+            // Modal Logic
+            const modal = document.getElementById('options-modal')
+            document.querySelector('.options-btn').addEventListener('click', () => modal.showModal())
+            document.querySelector('.close-modal').addEventListener('click', () => modal.close())
+
+            // Playback Mutually Exclusive Checkboxes & Loop Display
+            const autoSkipCheck = document.querySelector('.opt-autoskip')
+            const loopCheck = document.querySelector('.opt-loop')
+
+            autoSkipCheck.addEventListener('change', event => {
+                if (event.target.checked) {
+                    loopCheck.checked = false
+                }
+            })
+
+            loopCheck.addEventListener('change', event => {
+                if (event.target.checked) {
+                    autoSkipCheck.checked = false
+                }
+
+                // Show/hide loop counts on active players instantly when toggled
+                for (const element of document.querySelectorAll('.loop-info')) {
+                    element.style.display = event.target.checked ? 'inline' : 'none'
+                }
+            })
         })
     </script>
 </head>
 <body>
 <div class="queue-header">
     <h3>Queue (<span class="queue-count"></span>) <a class="reset-queue" href="#">Reset queue</a></h3>
-
-    <div class="middle-controls">
-        <div class="filters">
-            <label><input type="checkbox" class="filter-image" checked> Image</label>
-            <label><input type="checkbox" class="filter-video" checked> Video</label>
-            <label><input type="checkbox" class="filter-audio" checked> Audio</label>
-        </div>
-        <div class="layout-controls">
-            <label>Mode:
-                <select class="layout-mode">
-                    <option value="horizontal">Columns</option>
-                    <option value="vertical">Rows</option>
-                </select>
-            </label>
-            <label>Count: <input type="number" class="layout-count" value="3" min="1" max="10" style="width: 40px;"></label>
-        </div>
-    </div>
-
+    <button class="options-btn" style="width: auto; height: auto; padding: 5px 15px;">Options</button>
     <h3>Players (<span class="player-count"></span>) <a class="add-player" href="#">Add Player</a></h3>
 </div>
+
+<dialog id="options-modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 style="margin: 0; font-size: 1.2rem;">Options</h2>
+            <button class="close-modal" style="width: auto; height: auto; padding: 5px 10px;">Close</button>
+        </div>
+
+        <fieldset class="modal-section">
+            <legend>Filters</legend>
+            <div class="filters">
+                <label><input type="checkbox" class="filter-image" checked> Image</label>
+                <label><input type="checkbox" class="filter-video" checked> Video</label>
+                <label><input type="checkbox" class="filter-audio" checked> Audio</label>
+            </div>
+        </fieldset>
+
+        <fieldset class="modal-section">
+            <legend>Layout</legend>
+            <div class="layout-controls">
+                <label>Mode:
+                    <select class="layout-mode">
+                        <option value="horizontal">Columns</option>
+                        <option value="vertical">Rows</option>
+                    </select>
+                </label>
+                <label>Count: <input type="number" class="layout-count" value="3" min="1" max="10" style="width: 40px;"></label>
+            </div>
+        </fieldset>
+
+        <fieldset class="modal-section">
+            <legend>Playback</legend>
+            <div class="playback-controls">
+                <label><input type="checkbox" class="opt-autoplay" checked> Auto play</label>
+                <label><input type="checkbox" class="opt-autoskip" checked> Auto skip</label>
+                <label><input type="checkbox" class="opt-loop"> Loop</label>
+                <label style="margin-top: 10px; display: block;">Image duration (s): <br>
+                    <input type="number" class="opt-img-duration" value="5" min="1"
+                           style="width: 60px; margin-top: 5px;">
+                </label>
+            </div>
+        </fieldset>
+    </div>
+</dialog>
 
 <div class="players-container"></div>
 </body>
