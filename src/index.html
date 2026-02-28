@@ -112,6 +112,19 @@
             white-space: nowrap;
         }
 
+        .queue-header h3:first-of-type {
+            flex: 1;
+        }
+
+        .queue-header h3:last-of-type {
+            flex: 1;
+            text-align: right;
+        }
+
+        .queue-header h3 a {
+            margin-left: 15px;
+        }
+
         .filters {
             display: flex;
             flex-wrap: wrap;
@@ -167,6 +180,9 @@
         let filterAudio
         let playersContainer
 
+        let playerCountText
+        let addPlayerButton
+
         function addPlayer() {
             const playerNumber = ++playerCount
             const abortController = new AbortController()
@@ -181,7 +197,7 @@
             const root = document.createElement('div')
             root.classList.add('root')
             root.innerHTML = `
-<h2><a class="add" href="#">Add player</a> <a class="remove" href="#">Remove player</a></h2>
+<h2><a class="remove" href="#">Remove player</a></h2>
 <h2>Playing <span class="playing-text"></span> <span class="loading" aria-hidden="true" style="display: none;"></span></h2>
 <div class="container"></div>
 <div class="nav">
@@ -191,7 +207,6 @@
 
             const playingText = root.querySelector('.playing-text')
             const removeButton = root.querySelector('.remove')
-            const addButton = root.querySelector('.add')
             const container = root.querySelector('.container')
             const nextButton = root.querySelector('.next')
             const prevButton = root.querySelector('.prev')
@@ -344,7 +359,8 @@
                 nextFile()
             }
 
-            removeButton.addEventListener('click', () => {
+            removeButton.addEventListener('click', event => {
+                event.preventDefault()
                 if (playerCount === 1) {
                     return
                 }
@@ -352,9 +368,9 @@
                 abortController.abort('Player removed')
                 stop()
                 root.remove()
-            })
 
-            addButton.addEventListener('click', addPlayer)
+                playerCountText.innerText = playerCount.toString()
+            })
 
             for (const element of [image, video, audio]) {
                 element.style.display = 'none'
@@ -364,10 +380,17 @@
                 container.appendChild(element)
             }
 
-            prevButton.addEventListener('click', prevFile)
-            nextButton.addEventListener('click', nextFile)
+            prevButton.addEventListener('click', event => {
+                event.preventDefault()
+                prevFile()
+            })
+            nextButton.addEventListener('click', event => {
+                event.preventDefault()
+                nextFile()
+            })
 
             playersContainer.appendChild(root)
+            playerCountText.innerText = playerCount.toString()
             nextFile()
         }
 
@@ -410,8 +433,17 @@
 
             playersContainer = document.querySelector('.players-container')
 
-            resetQueueButton.addEventListener('click', () => {
+            playerCountText = document.querySelector('.player-count')
+            addPlayerButton = document.querySelector('.add-player')
+
+            resetQueueButton.addEventListener('click', event => {
+                event.preventDefault()
                 fetch('reset').then(getQueueInfo)
+            })
+
+            addPlayerButton.addEventListener('click', event => {
+                event.preventDefault()
+                addPlayer()
             })
 
             addPlayer()
@@ -427,6 +459,7 @@
         <label><input type="checkbox" class="filter-video" checked> Video</label>
         <label><input type="checkbox" class="filter-audio" checked> Audio</label>
     </div>
+    <h3>Players (<span class="player-count"></span>) <a class="add-player" href="#">Add Player</a></h3>
 </div>
 
 <div class="players-container"></div>
