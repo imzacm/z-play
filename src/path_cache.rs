@@ -1,11 +1,13 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::PathBuf;
+
+use rustc_hash::FxHashSet;
 
 const CACHE_SIZE: usize = 1000;
 
 #[derive(Debug, Clone)]
 pub struct PathCache {
-    set: HashSet<PathBuf>,
+    set: FxHashSet<PathBuf>,
     queue: VecDeque<PathBuf>,
 }
 
@@ -33,9 +35,8 @@ impl PathCache {
 
 impl Default for PathCache {
     fn default() -> Self {
-        Self {
-            set: HashSet::with_capacity(CACHE_SIZE),
-            queue: VecDeque::with_capacity(CACHE_SIZE),
-        }
+        let mut set = FxHashSet::default();
+        set.reserve(CACHE_SIZE);
+        Self { set, queue: VecDeque::with_capacity(CACHE_SIZE) }
     }
 }

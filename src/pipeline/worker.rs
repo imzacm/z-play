@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::mem::MaybeUninit;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -9,6 +8,7 @@ use glib::object::ObjectExt;
 use gstreamer::MessageView;
 use gstreamer::prelude::{ElementExt, ElementExtManual, GstBinExt, PadExtManual};
 use parking_lot::Mutex;
+use rustc_hash::FxHashMap;
 
 use super::Event;
 
@@ -102,7 +102,7 @@ enum Command {
 struct WorkerPool<const N: usize> {
     command_senders: [flume::Sender<Command>; N],
     next_index: AtomicUsize,
-    pipeline_worker_map: Arc<Mutex<HashMap<PipelineId, usize>>>,
+    pipeline_worker_map: Arc<Mutex<FxHashMap<PipelineId, usize>>>,
 }
 
 impl<const N: usize> WorkerPool<N> {
@@ -121,7 +121,7 @@ impl<const N: usize> WorkerPool<N> {
             unsafe { command_senders.as_ptr().cast::<[flume::Sender<Command>; N]>().read() };
 
         let next_index = AtomicUsize::new(0);
-        let pipeline_worker_map = Arc::new(Mutex::new(HashMap::new()));
+        let pipeline_worker_map = Arc::new(Mutex::new(FxHashMap::default()));
         Self { command_senders, next_index, pipeline_worker_map }
     }
 
@@ -158,7 +158,7 @@ impl<const N: usize> WorkerPool<N> {
 fn worker_thread(command_rx: flume::Receiver<Command>) {
     let context = glib::MainContext::new();
     context.spawn_local(async move {
-        let map = Rc::new(RefCell::new(HashMap::new()));
+        let map = Rc::new(RefCell::new(FxHashMap::default()));
 
         loop {
             let map_weak = Rc::downgrade(&map);

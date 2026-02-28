@@ -1,6 +1,8 @@
+use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::extract::Request;
@@ -10,6 +12,9 @@ use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Router, middleware};
+use axum_extra::extract::Query;
+use rustc_hash::FxHashSet;
+use serde::Deserialize;
 use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -19,6 +24,9 @@ use z_play::random_files::random_file_with_timeout;
 const QUEUE_SIZE: usize = 1000;
 const QUEUE_COUNT_HEADER: HeaderName = HeaderName::from_static("x-queue-count");
 const QUEUE_SIZE_HEADER: HeaderName = HeaderName::from_static("x-queue-size");
+const QUEUE_VIDEO_COUNT_HEADER: HeaderName = HeaderName::from_static("x-queue-video-count");
+const QUEUE_IMAGE_COUNT_HEADER: HeaderName = HeaderName::from_static("x-queue-image-count");
+const QUEUE_AUDIO_COUNT_HEADER: HeaderName = HeaderName::from_static("x-queue-audio-count");
 
 // Pre-cache tuning:
 // - Read up to this many bytes per queued file. Good default for mixed media: 4–16 MiB.
@@ -31,6 +39,42 @@ const PRECACHE_CHUNK_BYTES: usize = 1024 * 1024;
 static ROOTS: OnceLock<Vec<PathBuf>> = OnceLock::new();
 static QUEUE_CHANNEL: OnceLock<(flume::Sender<PathBuf>, flume::Receiver<PathBuf>)> =
     OnceLock::new();
+static QUEUE_STATS: QueueStats = QueueStats::new();
+
+#[derive(Default, Debug)]
+struct QueueStats {
+    video_count: AtomicUsize,
+    image_count: AtomicUsize,
+    audio_count: AtomicUsize,
+}
+
+impl QueueStats {
+    const fn new() -> Self {
+        Self {
+            video_count: AtomicUsize::new(0),
+            image_count: AtomicUsize::new(0),
+            audio_count: AtomicUsize::new(0),
+        }
+    }
+
+    fn push_path(&self, path: &Path) {
+        match FileKind::from_path(path) {
+            Some(FileKind::Video) => self.video_count.fetch_add(1, Ordering::Relaxed),
+            Some(FileKind::Image) => self.image_count.fetch_add(1, Ordering::Relaxed),
+            Some(FileKind::Audio) => self.audio_count.fetch_add(1, Ordering::Relaxed),
+            None => 0,
+        };
+    }
+
+    fn remove_path(&self, path: &Path) {
+        match FileKind::from_path(path) {
+            Some(FileKind::Video) => self.video_count.fetch_sub(1, Ordering::Relaxed),
+            Some(FileKind::Image) => self.image_count.fetch_sub(1, Ordering::Relaxed),
+            Some(FileKind::Audio) => self.audio_count.fetch_sub(1, Ordering::Relaxed),
+            None => 0,
+        };
+    }
+}
 
 pub fn start_server(port: u16, roots: Vec<PathBuf>) {
     tokio::runtime::Builder::new_multi_thread()
@@ -85,14 +129,68 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
     axum::serve(listener, app).await.unwrap();
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum FileKind {
+    Video,
+    Audio,
+    Image,
+}
+
+impl FileKind {
+    fn from_path<P>(path: P) -> Option<Self>
+    where
+        P: AsRef<Path>,
+    {
+        let path = path.as_ref();
+        let extension = path.extension()?.to_str()?;
+
+        let extension = if extension.chars().all(|c| c.is_ascii_lowercase()) {
+            Cow::Borrowed(extension)
+        } else {
+            Cow::Owned(extension.to_ascii_lowercase())
+        };
+
+        Self::from_extension(&extension)
+    }
+
+    fn from_extension(extension: &str) -> Option<Self> {
+        match extension.to_lowercase().as_str() {
+            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "svg" | "tiff" => Some(Self::Image),
+            "mp4" | "mkv" | "webm" | "avi" | "mov" | "wmv" | "flv" | "mpeg" => Some(Self::Video),
+            "mp3" | "wav" | "ogg" | "m4a" | "flac" | "aac" => Some(Self::Audio),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RandomQuery {
+    #[serde(default, rename = "kind")]
+    kinds: FxHashSet<FileKind>,
+}
+
 async fn root_handler() -> Html<&'static str> {
     Html(include_str!("index.html"))
 }
 
-async fn random_path_handler() -> impl IntoResponse {
+async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
+    let RandomQuery { kinds } = query.0;
+
     let (queue_tx, queue_rx) = QUEUE_CHANNEL.get().unwrap();
     let path = loop {
         let path = queue_rx.recv_async().await.expect("Queue channel disconnected");
+
+        if !kinds.is_empty()
+            && let Some(file_kind) = FileKind::from_path(&path)
+            && !kinds.contains(&file_kind)
+        {
+            tokio::spawn(async move {
+                queue_tx.send_async(path).await.expect("Queue channel disconnected");
+            });
+            continue;
+        }
+
         let future = precache_file(&path);
         match tokio::time::timeout(Duration::from_millis(100), future).await {
             Ok(Ok(())) => break path,
@@ -106,6 +204,11 @@ async fn random_path_handler() -> impl IntoResponse {
         }
     };
 
+    QUEUE_STATS.remove_path(&path);
+    let video_count = QUEUE_STATS.video_count.load(Ordering::Relaxed);
+    let image_count = QUEUE_STATS.image_count.load(Ordering::Relaxed);
+    let audio_count = QUEUE_STATS.audio_count.load(Ordering::Relaxed);
+
     let path_str = path.to_str().expect("Only UTF-8 paths are supported");
 
     (
@@ -117,6 +220,9 @@ async fn random_path_handler() -> impl IntoResponse {
         [
             (QUEUE_COUNT_HEADER, queue_rx.len().to_string()),
             (QUEUE_SIZE_HEADER, QUEUE_SIZE.to_string()),
+            (QUEUE_VIDEO_COUNT_HEADER, video_count.to_string()),
+            (QUEUE_IMAGE_COUNT_HEADER, image_count.to_string()),
+            (QUEUE_AUDIO_COUNT_HEADER, audio_count.to_string()),
         ],
         path_str.to_string(),
     )
@@ -124,7 +230,16 @@ async fn random_path_handler() -> impl IntoResponse {
 
 async fn queue_info() -> impl IntoResponse {
     let (_, queue_rx) = QUEUE_CHANNEL.get().unwrap();
-    [(QUEUE_COUNT_HEADER, queue_rx.len().to_string()), (QUEUE_SIZE_HEADER, QUEUE_SIZE.to_string())]
+    let video_count = QUEUE_STATS.video_count.load(Ordering::Relaxed);
+    let image_count = QUEUE_STATS.image_count.load(Ordering::Relaxed);
+    let audio_count = QUEUE_STATS.audio_count.load(Ordering::Relaxed);
+    [
+        (QUEUE_COUNT_HEADER, queue_rx.len().to_string()),
+        (QUEUE_SIZE_HEADER, QUEUE_SIZE.to_string()),
+        (QUEUE_VIDEO_COUNT_HEADER, video_count.to_string()),
+        (QUEUE_IMAGE_COUNT_HEADER, image_count.to_string()),
+        (QUEUE_AUDIO_COUNT_HEADER, audio_count.to_string()),
+    ]
 }
 
 async fn reset_queue_handler() -> impl IntoResponse {
@@ -164,7 +279,8 @@ fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
         };
 
         if cache.insert_or_remove(path.clone()) {
-            queue_tx.send(path).expect("Queue channel disconnected");
+            queue_tx.send(path.clone()).expect("Queue channel disconnected");
+            QUEUE_STATS.push_path(&path);
         }
     }
 }

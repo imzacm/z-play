@@ -96,12 +96,39 @@
                 transform: rotate(360deg);
             }
         }
+
+        .queue-header {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+            margin: 5px;
+        }
+
+        .queue-header h3 {
+            margin: 0; /* Removes default margin for better flex alignment */
+            font-size: 0.9rem;
+            white-space: nowrap;
+        }
+
+        .filters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            font-size: 0.85rem;
+        }
+
+        .filters label {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+        }
     </style>
 
     <script>
         let playerCount = 0
 
-        function addPlayer() {
+        function addPlayer(initialImage = true, initialVideo = true, initialAudio = true) {
             const playerNumber = ++playerCount
             const abortController = new AbortController()
 
@@ -116,7 +143,15 @@
             root.classList.add('root')
             root.innerHTML = `
 <h2><a class="add" href="#">Add player</a> <a class="remove" href="#">Remove player</a></h2>
-<h3>Queue (<span class="queue-count"></span>) <a class="reset-queue" href="#">Reset queue</a> <span class="loading" aria-hidden="true"></span></h3>
+<div class="queue-header">
+    <h3>Queue (<span class="queue-count"></span>) <a class="reset-queue" href="#">Reset queue</a></h3>
+    <div class="filters">
+        <label><input type="checkbox" class="filter-image" ${initialImage ? 'checked' : ''}> Image</label>
+        <label><input type="checkbox" class="filter-video" ${initialVideo ? 'checked' : ''}> Video</label>
+        <label><input type="checkbox" class="filter-audio" ${initialAudio ? 'checked' : ''}> Audio</label>
+    </div>
+    <span class="loading" aria-hidden="true" style="display: none;"></span>
+</div>
 <h2>Playing <span class="playing-text"></span></h2>
 <div class="container"></div>
 <div class="nav">
@@ -133,6 +168,9 @@
             const prevButton = root.querySelector('.prev')
             const resetQueueButton = root.querySelector('.reset-queue')
             const loadingSpinner = root.querySelector('.loading')
+            const filterImage = root.querySelector('.filter-image')
+            const filterVideo = root.querySelector('.filter-video')
+            const filterAudio = root.querySelector('.filter-audio')
 
             const setLoading = value => {
                 loading = value
@@ -186,10 +224,23 @@
                 let path
                 if (next) {
                     if (history.length === 0 || historyIndex === history.length - 1) {
-                        path = await fetch('random', {signal: abortController.signal}).then(response => {
+                        const query = new URLSearchParams()
+                        if (filterImage.checked) {
+                            query.append('kind', 'image')
+                        }
+                        if (filterVideo.checked) {
+                            query.append('kind', 'video')
+                        }
+                        if (filterAudio.checked) {
+                            query.append('kind', 'audio')
+                        }
+                        path = await fetch(`random?${query}`, {signal: abortController.signal}).then(response => {
                             const queueCount = response.headers.get('x-queue-count')
                             const queueSize = response.headers.get('x-queue-size')
-                            queueCountText.innerText = `${queueCount} / ${queueSize}`
+                            const videoCount = response.headers.get('x-queue-video-count')
+                            const imageCount = response.headers.get('x-queue-image-count')
+                            const audioCount = response.headers.get('x-queue-audio-count')
+                            queueCountText.innerText = `${queueCount} / ${queueSize} - ${videoCount} videos, ${imageCount} images, ${audioCount} audio`
                             return response.text()
                         })
                         history.push(path)
@@ -278,7 +329,7 @@
                 document.body.removeChild(root)
             })
 
-            addButton.addEventListener('click', addPlayer)
+            addButton.addEventListener('click', () => addPlayer(filterImage.checked, filterVideo.checked, filterAudio.checked))
 
             for (const element of [image, video, audio]) {
                 element.style.display = 'none'
@@ -302,9 +353,12 @@
             const response = await fetch('queue')
             const queueCount = response.headers.get('x-queue-count')
             const queueSize = response.headers.get('x-queue-size')
+            const videoCount = response.headers.get('x-queue-video-count')
+            const imageCount = response.headers.get('x-queue-image-count')
+            const audioCount = response.headers.get('x-queue-audio-count')
 
             for (const element of document.querySelectorAll('.queue-count')) {
-                element.innerText = `${queueCount} / ${queueSize}`
+                element.innerText = `${queueCount} / ${queueSize} - ${videoCount} videos, ${imageCount} images, ${audioCount} audio`
             }
         }
 
