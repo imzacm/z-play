@@ -23,14 +23,6 @@
             box-sizing: border-box;
         }
 
-        h2 {
-            margin: 5px;
-            font-size: 0.9rem;
-            flex-shrink: 0;
-            white-space: nowrap;
-            overflow: hidden;
-        }
-
         .container {
             flex: 1;
             min-height: 0;
@@ -168,6 +160,36 @@
                 height: auto;
             }
         }
+
+        /* Container for the top labels */
+        .player-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start; /* Aligns items to the top */
+            padding: 5px;
+            gap: 10px;
+            background: #f8f8f8; /* Optional: adds a slight definition to the header */
+            border-bottom: 1px solid #333;
+        }
+
+        .playing-info {
+            margin: 0 !important;
+            font-size: 0.8rem;
+            flex: 1; /* Takes up remaining space */
+            white-space: normal !important; /* Allows wrapping */
+            word-break: break-all; /* Ensures long file paths don't break layout */
+        }
+
+        .controls {
+            margin: 0 !important;
+            font-size: 0.8rem;
+            white-space: nowrap; /* Keeps "Remove player" on one line */
+            flex-shrink: 0; /* Prevents the button from being squished */
+        }
+
+        h2 {
+            margin: 0;
+        }
     </style>
 
     <script>
@@ -197,8 +219,10 @@
             const root = document.createElement('div')
             root.classList.add('root')
             root.innerHTML = `
-<h2><a class="remove" href="#">Remove player</a></h2>
-<h2>Playing <span class="playing-text"></span> <span class="loading" aria-hidden="true" style="display: none;"></span></h2>
+<div class="player-header">
+    <h2 class="playing-info">Playing <span class="playing-text"></span> <span class="loading" aria-hidden="true" style="display: none;"></span></h2>
+    <h2 class="controls"><a class="remove" href="#">Remove player</a></h2>
+</div>
 <div class="container"></div>
 <div class="nav">
     <button class="prev">Previous</button>
@@ -211,6 +235,10 @@
             const nextButton = root.querySelector('.next')
             const prevButton = root.querySelector('.prev')
             const loadingSpinner = root.querySelector('.loading')
+
+            if (playerCount === 1) {
+                removeButton.style.display = 'none'
+            }
 
             const setLoading = value => {
                 loading = value
@@ -370,6 +398,12 @@
                 root.remove()
 
                 playerCountText.innerText = playerCount.toString()
+
+                if (playerCount === 1) {
+                    for (const element of document.querySelectorAll('.remove')) {
+                        element.style.display = 'none'
+                    }
+                }
             })
 
             for (const element of [image, video, audio]) {
@@ -391,6 +425,13 @@
 
             playersContainer.appendChild(root)
             playerCountText.innerText = playerCount.toString()
+
+            if (playerCount > 1) {
+                for (const element of document.querySelectorAll('.remove')) {
+                    element.style.display = ''
+                }
+            }
+
             nextFile()
         }
 
