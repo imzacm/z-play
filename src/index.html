@@ -1,5 +1,7 @@
+<!DOCTYPE html>
 <html lang="en">
 <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Z-Play</title>
 
     <style>
@@ -8,6 +10,8 @@
             display: flex;
             flex-direction: column; /* Stacks the header and the player container vertically */
             height: 100dvh;
+            max-width: 100vw;
+            overflow-x: hidden;
         }
 
         .root {
@@ -15,7 +19,7 @@
             display: flex;
             flex-direction: column;
             min-height: 0;
-            /* Remove the hardcoded 30% width from your original CSS */
+            min-width: 0;
             width: auto;
             border: 1px solid #333;
             box-sizing: border-box;
@@ -128,37 +132,6 @@
             display: flex;
             align-items: center;
             cursor: pointer;
-        }
-
-        /* Mobile responsive styles */
-        @media (max-width: 768px) {
-            body {
-                height: auto;
-                min-height: 100dvh;
-            }
-
-            .root {
-                width: 100%;
-                min-height: 50dvh;
-                height: auto;
-                max-height: none;
-                flex: 1 1 auto;
-            }
-        }
-
-        /* Targets tall/narrow screens (cover screen), ignoring display scaling */
-        @media (max-aspect-ratio: 3/4) {
-            body {
-                height: auto;
-                min-height: 100dvh;
-            }
-
-            .root {
-                flex: 1 1 100%;
-                max-width: 100%;
-                min-height: 50dvh;
-                height: auto;
-            }
         }
 
         /* Container for the top labels */
@@ -479,17 +452,24 @@
             count = Math.min(count, playerCount)
 
             // Set the direction on the container
-            playersContainer.style.flexDirection = mode === 'horizontal' ? 'row' : 'column'
+            playersContainer.style.flexDirection = mode === 'horizontal' ? 'row' : 'column';
+
+            // Calculate how many columns (if vertical) or rows (if horizontal) we need
+            const crossCount = Math.ceil(playerCount / count) || 1;
 
             for (const player of document.querySelectorAll('.root')) {
-                // flex-grow: 1 (first value) lets players stretch to fill their current row/column.
-                // flex-basis (third value) forces a wrap once the limit is hit.
-                player.style.flex = `1 1 calc(100% / ${count})`
+                // flex-basis sets the size along the MAIN axis (width for rows, height for columns)
+                player.style.flex = `1 1 calc(100% / ${count})`;
 
-                // Clear any hardcoded cross-axis sizes.
-                // Your existing CSS 'align-content: stretch' handles dividing the screen evenly!
-                player.style.width = ''
-                player.style.height = ''
+                if (mode === 'horizontal') {
+                    // Horizontal mode: Flexbox handles width. We strictly divide the height.
+                    player.style.width = '';
+                    player.style.height = `calc(100% / ${crossCount})`;
+                } else {
+                    // Vertical mode: Flexbox handles height. We strictly divide the width.
+                    player.style.height = '';
+                    player.style.width = `calc(100% / ${crossCount})`;
+                }
             }
         }
 
@@ -533,18 +513,17 @@
         <label><input type="checkbox" class="filter-image" checked> Image</label>
         <label><input type="checkbox" class="filter-video" checked> Video</label>
         <label><input type="checkbox" class="filter-audio" checked> Audio</label>
-
-        <div class="layout-controls"
-             style="display: flex; gap: 10px; align-items: center; border-left: 1px solid #ccc; padding-left: 10px;">
-            <label>Mode:
-                <select class="layout-mode">
-                    <option value="horizontal">Columns</option>
-                    <option value="vertical">Rows</option>
-                </select>
-            </label>
-            <label>Count: <input type="number" class="layout-count" value="3" min="1" max="10"
-                                 style="width: 40px;"></label>
-        </div>
+    </div>
+    <div class="layout-controls"
+         style="display: flex; gap: 10px; align-items: center; border-left: 1px solid #ccc; padding-left: 10px;">
+        <label>Mode:
+            <select class="layout-mode">
+                <option value="horizontal">Columns</option>
+                <option value="vertical">Rows</option>
+            </select>
+        </label>
+        <label>Count: <input type="number" class="layout-count" value="3" min="1" max="10"
+                             style="width: 40px;"></label>
     </div>
     <h3>Players (<span class="player-count"></span>) <a class="add-player" href="#">Add Player</a></h3>
 </div>
