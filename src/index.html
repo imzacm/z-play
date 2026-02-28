@@ -207,6 +207,46 @@
     </style>
 
     <script>
+        const settingsManager = {
+            // Selectors for all the inputs we want to save
+            fields: [
+                '.filter-image', '.filter-video', '.filter-audio',
+                '.layout-mode', '.layout-count',
+                '.opt-autoplay', '.opt-autoskip', '.opt-loop',
+                '.opt-img-duration-enabled', '.opt-img-duration'
+            ],
+
+            save() {
+                const data = {};
+                this.fields.forEach(selector => {
+                    const el = document.querySelector(selector);
+                    if (!el) return;
+                    // Store checked state for checkboxes, value for everything else
+                    data[selector] = el.type === 'checkbox' ? el.checked : el.value;
+                });
+                localStorage.setItem('zplay_settings', JSON.stringify(data));
+            },
+
+            load() {
+                const data = JSON.parse(localStorage.getItem('zplay_settings'));
+                if (!data) return;
+
+                Object.entries(data).forEach(([selector, value]) => {
+                    const el = document.querySelector(selector);
+                    if (!el) return;
+
+                    if (el.type === 'checkbox') {
+                        el.checked = value;
+                    } else {
+                        el.value = value;
+                    }
+                    // Manually trigger change events so your UI logic (like disabling inputs) runs
+                    el.dispatchEvent(new Event('change'));
+                    el.dispatchEvent(new Event('input'));
+                });
+            }
+        }
+
         let playerCount = 0
 
         let queueCountText
@@ -589,6 +629,12 @@
         }
 
         document.addEventListener('DOMContentLoaded', () => {
+            settingsManager.load()
+
+            document.getElementById('options-modal').addEventListener('change', () => {
+                settingsManager.save()
+            })
+
             queueCountText = document.querySelector('.queue-count')
             resetQueueButton = document.querySelector('.reset-queue')
             filterImage = document.querySelector('.filter-image')
