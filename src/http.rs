@@ -90,7 +90,7 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
     let app = Router::new()
         .route("/", get(root_handler))
         .route("/random", get(random_path_handler))
-        .route("/queue", get(queue_info))
+        .route("/queue", get(queue_info_handler))
         .route("/reset", get(reset_queue_handler))
         .nest_service(
             "/files",
@@ -205,10 +205,6 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
     };
 
     QUEUE_STATS.remove_path(&path);
-    let video_count = QUEUE_STATS.video_count.load(Ordering::Relaxed);
-    let image_count = QUEUE_STATS.image_count.load(Ordering::Relaxed);
-    let audio_count = QUEUE_STATS.audio_count.load(Ordering::Relaxed);
-
     let path_str = path.to_str().expect("Only UTF-8 paths are supported");
 
     (
@@ -217,18 +213,16 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
             (PRAGMA, "no-cache"),
             (EXPIRES, "0"),
         ],
-        [
-            (QUEUE_COUNT_HEADER, queue_rx.len().to_string()),
-            (QUEUE_SIZE_HEADER, QUEUE_SIZE.to_string()),
-            (QUEUE_VIDEO_COUNT_HEADER, video_count.to_string()),
-            (QUEUE_IMAGE_COUNT_HEADER, image_count.to_string()),
-            (QUEUE_AUDIO_COUNT_HEADER, audio_count.to_string()),
-        ],
+        queue_info(),
         path_str.to_string(),
     )
 }
 
-async fn queue_info() -> impl IntoResponse {
+async fn queue_info_handler() -> [(HeaderName, String); 5] {
+    queue_info()
+}
+
+fn queue_info() -> [(HeaderName, String); 5] {
     let (_, queue_rx) = QUEUE_CHANNEL.get().unwrap();
     let video_count = QUEUE_STATS.video_count.load(Ordering::Relaxed);
     let image_count = QUEUE_STATS.image_count.load(Ordering::Relaxed);
