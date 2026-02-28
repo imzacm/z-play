@@ -123,6 +123,35 @@
             align-items: center;
             cursor: pointer;
         }
+
+        /* Mobile responsive styles */
+        @media (max-width: 768px) {
+            body {
+                height: auto; /* Allow the page to scroll if there are many players */
+                min-height: 100dvh;
+            }
+
+            .root {
+                width: 100%; /* Force full width so they stack vertically */
+                height: 50dvh; /* Give each player a fixed height on mobile */
+                max-height: none; /* Override the desktop max-height */
+                flex: none; /* Prevent flexbox from squishing them */
+            }
+        }
+
+        /* Targets tall/narrow screens (cover screen), ignoring display scaling */
+        @media (max-aspect-ratio: 3/4) {
+            body {
+                height: auto;
+                min-height: 100dvh;
+            }
+
+            .root {
+                flex: 1 1 100%; /* Forces the flex item to take 100% width */
+                max-width: 100%; /* Overrides the desktop max-width */
+                height: 50dvh;
+            }
+        }
     </style>
 
     <script>
