@@ -6,19 +6,9 @@
         body {
             margin: 0;
             display: flex;
-            flex-wrap: wrap;
+            flex-direction: column; /* Stacks the header and the player container vertically */
             height: 100dvh;
-            /*overflow: hidden;*/
-            align-content: stretch;
         }
-
-        /*
-        h1 {
-            margin: 10px;
-            font-size: 1.2rem;
-            flex-shrink: 0;
-        }
-         */
 
         .root {
             flex: 1 1 auto;
@@ -97,16 +87,27 @@
             }
         }
 
+        .players-container {
+            display: flex;
+            flex-wrap: wrap;
+            align-content: stretch;
+            flex: 1; /* Forces this container to take up all space below the header */
+            min-height: 0;
+        }
+
         .queue-header {
             display: flex;
             flex-wrap: wrap;
             align-items: center;
             gap: 10px;
-            margin: 5px;
+            padding: 5px;
+            width: 100%;
+            box-sizing: border-box;
+            flex-shrink: 0; /* Prevents the header from getting squished if the page gets crowded */
         }
 
         .queue-header h3 {
-            margin: 0; /* Removes default margin for better flex alignment */
+            margin: 0;
             font-size: 0.9rem;
             white-space: nowrap;
         }
@@ -127,15 +128,16 @@
         /* Mobile responsive styles */
         @media (max-width: 768px) {
             body {
-                height: auto; /* Allow the page to scroll if there are many players */
+                height: auto;
                 min-height: 100dvh;
             }
 
             .root {
-                width: 100%; /* Force full width so they stack vertically */
-                height: 50dvh; /* Give each player a fixed height on mobile */
-                max-height: none; /* Override the desktop max-height */
-                flex: none; /* Prevent flexbox from squishing them */
+                width: 100%;
+                min-height: 50dvh;
+                height: auto;
+                max-height: none;
+                flex: 1 1 auto;
             }
         }
 
@@ -147,9 +149,10 @@
             }
 
             .root {
-                flex: 1 1 100%; /* Forces the flex item to take 100% width */
-                max-width: 100%; /* Overrides the desktop max-width */
-                height: 50dvh;
+                flex: 1 1 100%;
+                max-width: 100%;
+                min-height: 50dvh;
+                height: auto;
             }
         }
     </style>
@@ -157,7 +160,14 @@
     <script>
         let playerCount = 0
 
-        function addPlayer(initialImage = true, initialVideo = true, initialAudio = true) {
+        let queueCountText
+        let resetQueueButton
+        let filterImage
+        let filterVideo
+        let filterAudio
+        let playersContainer
+
+        function addPlayer() {
             const playerNumber = ++playerCount
             const abortController = new AbortController()
 
@@ -172,16 +182,7 @@
             root.classList.add('root')
             root.innerHTML = `
 <h2><a class="add" href="#">Add player</a> <a class="remove" href="#">Remove player</a></h2>
-<div class="queue-header">
-    <h3>Queue (<span class="queue-count"></span>) <a class="reset-queue" href="#">Reset queue</a></h3>
-    <div class="filters">
-        <label><input type="checkbox" class="filter-image" ${initialImage ? 'checked' : ''}> Image</label>
-        <label><input type="checkbox" class="filter-video" ${initialVideo ? 'checked' : ''}> Video</label>
-        <label><input type="checkbox" class="filter-audio" ${initialAudio ? 'checked' : ''}> Audio</label>
-    </div>
-    <span class="loading" aria-hidden="true" style="display: none;"></span>
-</div>
-<h2>Playing <span class="playing-text"></span></h2>
+<h2>Playing <span class="playing-text"></span> <span class="loading" aria-hidden="true" style="display: none;"></span></h2>
 <div class="container"></div>
 <div class="nav">
     <button class="prev">Previous</button>
@@ -189,17 +190,12 @@
 </div>`
 
             const playingText = root.querySelector('.playing-text')
-            const queueCountText = root.querySelector('.queue-count')
             const removeButton = root.querySelector('.remove')
             const addButton = root.querySelector('.add')
             const container = root.querySelector('.container')
             const nextButton = root.querySelector('.next')
             const prevButton = root.querySelector('.prev')
-            const resetQueueButton = root.querySelector('.reset-queue')
             const loadingSpinner = root.querySelector('.loading')
-            const filterImage = root.querySelector('.filter-image')
-            const filterVideo = root.querySelector('.filter-video')
-            const filterAudio = root.querySelector('.filter-audio')
 
             const setLoading = value => {
                 loading = value
@@ -355,10 +351,10 @@
                 playerCount--
                 abortController.abort('Player removed')
                 stop()
-                document.body.removeChild(root)
+                root.remove()
             })
 
-            addButton.addEventListener('click', () => addPlayer(filterImage.checked, filterVideo.checked, filterAudio.checked))
+            addButton.addEventListener('click', addPlayer)
 
             for (const element of [image, video, audio]) {
                 element.style.display = 'none'
@@ -370,11 +366,8 @@
 
             prevButton.addEventListener('click', prevFile)
             nextButton.addEventListener('click', nextFile)
-            resetQueueButton.addEventListener('click', () => {
-                fetch('reset', {signal: abortController.signal}).then(getQueueInfo)
-            })
 
-            document.body.appendChild(root)
+            playersContainer.appendChild(root)
             nextFile()
         }
 
@@ -386,9 +379,7 @@
             const imageCount = response.headers.get('x-queue-image-count')
             const audioCount = response.headers.get('x-queue-audio-count')
 
-            for (const element of document.querySelectorAll('.queue-count')) {
-                element.innerText = `${queueCount} / ${queueSize} - ${videoCount} videos, ${imageCount} images, ${audioCount} audio`
-            }
+            queueCountText.innerText = `${queueCount} / ${queueSize} - ${videoCount} videos, ${imageCount} images, ${audioCount} audio`
         }
 
         let queueInfoTimeout = null
@@ -411,11 +402,33 @@
         }
 
         document.addEventListener('DOMContentLoaded', () => {
+            queueCountText = document.querySelector('.queue-count')
+            resetQueueButton = document.querySelector('.reset-queue')
+            filterImage = document.querySelector('.filter-image')
+            filterVideo = document.querySelector('.filter-video')
+            filterAudio = document.querySelector('.filter-audio')
+
+            playersContainer = document.querySelector('.players-container')
+
+            resetQueueButton.addEventListener('click', () => {
+                fetch('reset').then(getQueueInfo)
+            })
+
             addPlayer()
             getQueueInfoPoll()
         })
     </script>
 </head>
 <body>
+<div class="queue-header">
+    <h3>Queue (<span class="queue-count"></span>) <a class="reset-queue" href="#">Reset queue</a></h3>
+    <div class="filters">
+        <label><input type="checkbox" class="filter-image" checked> Image</label>
+        <label><input type="checkbox" class="filter-video" checked> Video</label>
+        <label><input type="checkbox" class="filter-audio" checked> Audio</label>
+    </div>
+</div>
+
+<div class="players-container"></div>
 </body>
 </html>
