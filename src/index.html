@@ -144,7 +144,7 @@
             margin: 0;
         }
 
-        .playback-controls label {
+        .playback-controls label, .root-controls label {
             display: flex;
             align-items: center;
             cursor: pointer;
@@ -409,12 +409,7 @@
                             query.append('kind', 'audio')
                         }
                         path = await fetch(`random?${query}`, {signal: abortController.signal}).then(response => {
-                            const queueCount = response.headers.get('x-queue-count')
-                            const queueSize = response.headers.get('x-queue-size')
-                            const videoCount = response.headers.get('x-queue-video-count')
-                            const imageCount = response.headers.get('x-queue-image-count')
-                            const audioCount = response.headers.get('x-queue-audio-count')
-                            queueCountText.innerText = `${queueCount} / ${queueSize} - ${videoCount} videos, ${imageCount} images, ${audioCount} audio`
+                            setQueueCountFromResponse(response)
                             return response.text()
                         })
                         history.push(path)
@@ -571,8 +566,7 @@
             updateLayout()
         }
 
-        async function getQueueInfo() {
-            const response = await fetch('queue')
+        function setQueueCountFromResponse(response) {
             const queueCount = response.headers.get('x-queue-count')
             const queueSize = response.headers.get('x-queue-size')
             const videoCount = response.headers.get('x-queue-video-count')
@@ -580,6 +574,11 @@
             const audioCount = response.headers.get('x-queue-audio-count')
 
             queueCountText.innerText = `${queueCount} / ${queueSize} - ${videoCount} videos, ${imageCount} images, ${audioCount} audio`
+        }
+
+        async function getQueueInfo() {
+            const response = await fetch('queue')
+            setQueueCountFromResponse(response)
         }
 
         let queueInfoTimeout = null
@@ -628,10 +627,41 @@
             }
         }
 
+        const patchRootsBody = []
+        let patchRootsTimeout = null
+
+        const rootCheckboxChanged = checkbox => {
+            if (!checkbox.id.startsWith('root-')) {
+                return
+            }
+
+            const root = checkbox.id.substring(5)
+            patchRootsBody.push({path: root, enabled: checkbox.checked})
+
+            if (patchRootsTimeout === null) {
+                patchRootsTimeout = setTimeout(() => {
+                    patchRootsTimeout = null
+                    fetch('roots', {
+                        method: 'PATCH',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(patchRootsBody.splice(0))
+                    })
+                        .then(response => setQueueCountFromResponse(response))
+                        .catch(error => console.error('Error updating roots:', error))
+                }, 100)
+            }
+        }
+
         document.addEventListener('DOMContentLoaded', () => {
             settingsManager.load()
-
-            document.getElementById('options-modal').addEventListener('change', () => {
+            document.getElementById('options-modal').addEventListener('change', event => {
+                const target = event.originalTarget || event.target
+                if (target.type === 'checkbox' && target.id.startsWith('root-')) {
+                    rootCheckboxChanged(target)
+                    return
+                }
                 settingsManager.save()
             })
 
@@ -667,7 +697,33 @@
 
             // Modal Logic
             const modal = document.getElementById('options-modal')
-            document.querySelector('.options-btn').addEventListener('click', () => modal.showModal())
+            document.querySelector('.options-btn').addEventListener('click', async () => {
+                try {
+                    const roots = await fetch('roots').then(response => {
+                        setQueueCountFromResponse(response)
+                        return response.json()
+                    })
+
+                    const root = document.querySelector('.root-controls')
+                    root.innerHTML = ''
+
+                    const elements = []
+                    for (const {path, enabled} of roots) {
+                        const div = document.createElement('div')
+                        div.innerHTML = `<label><input id="root-${path}" type="checkbox" ${enabled ? 'checked' : ''}> ${path}</label>`
+                        const element = div.firstElementChild
+                        element.onchange = rootCheckboxChanged.bind(null, element)
+                        elements.push(element)
+                    }
+                    elements.sort((a, b) => a.innerText.localeCompare(b.innerText))
+                    for (const element of elements) {
+                        root.appendChild(element)
+                    }
+                } catch (error) {
+                    console.error('Error fetching roots:', error)
+                }
+                modal.showModal()
+            })
             document.querySelector('.close-modal').addEventListener('click', () => modal.close())
 
             // Playback Mutually Exclusive Checkboxes & Loop Display
@@ -690,13 +746,31 @@
                     element.style.display = event.target.checked ? 'inline' : 'none'
                 }
             })
-        })
 
-        const imgDurationCheck = document.querySelector('.opt-img-duration-enabled')
-        const imgDurationInput = document.querySelector('.opt-img-duration')
+            const imgDurationCheck = document.querySelector('.opt-img-duration-enabled')
+            const imgDurationInput = document.querySelector('.opt-img-duration')
 
-        imgDurationCheck.addEventListener('change', event => {
-            imgDurationInput.disabled = !event.target.checked
+            imgDurationCheck.addEventListener('change', event => {
+                imgDurationInput.disabled = !event.target.checked
+            })
+
+            const selectAllRoots = document.querySelector('.select-all-roots')
+            const deselectAllRoots = document.querySelector('.deselect-all-roots')
+
+            selectAllRoots.addEventListener('click', event => {
+                event.preventDefault()
+                for (const element of document.querySelectorAll('.root-controls input[type="checkbox"]')) {
+                    element.checked = true
+                    rootCheckboxChanged(element)
+                }
+            })
+            deselectAllRoots.addEventListener('click', event => {
+                event.preventDefault()
+                for (const element of document.querySelectorAll('.root-controls input[type="checkbox"]')) {
+                    element.checked = false
+                    rootCheckboxChanged(element)
+                }
+            })
         })
     </script>
 </head>
@@ -751,6 +825,13 @@
                            style="width: 60px; margin-left: 24px;">
                 </div>
             </div>
+        </fieldset>
+
+        <fieldset class="modal-section">
+            <legend>Roots</legend>
+            <a class="select-all-roots" href="#">Select All</a>
+            <a class="deselect-all-roots" href="#">Deselect All</a>
+            <div class="root-controls"></div>
         </fieldset>
     </div>
 </dialog>

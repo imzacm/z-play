@@ -1,20 +1,21 @@
 use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
 
 use axum::extract::Request;
 use axum::http::header::{CACHE_CONTROL, EXPIRES, PRAGMA};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::middleware::Next;
-use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::response::{Html, IntoResponse, Json, Response};
+use axum::routing::{get, patch};
 use axum::{Router, middleware};
 use axum_extra::extract::Query;
+use parking_lot::RwLock;
 use rustc_hash::FxHashSet;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -36,7 +37,9 @@ const PRECACHE_READ_BYTES: u64 = 8 * 1024 * 1024;
 // 1 MiB
 const PRECACHE_CHUNK_BYTES: usize = 1024 * 1024;
 
-static ROOTS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+static ENABLED_ROOTS: LazyLock<RwLock<Vec<PathBuf>>> = LazyLock::new(|| RwLock::new(Vec::new()));
+static DISABLED_ROOTS: LazyLock<RwLock<Vec<PathBuf>>> = LazyLock::new(|| RwLock::new(Vec::new()));
+
 static QUEUE_CHANNEL: OnceLock<(flume::Sender<PathBuf>, flume::Receiver<PathBuf>)> =
     OnceLock::new();
 static QUEUE_STATS: QueueStats = QueueStats::new();
@@ -74,6 +77,12 @@ impl QueueStats {
             None => 0,
         };
     }
+
+    fn reset(&self) {
+        self.video_count.store(0, Ordering::Relaxed);
+        self.image_count.store(0, Ordering::Relaxed);
+        self.audio_count.store(0, Ordering::Relaxed);
+    }
 }
 
 pub fn start_server(port: u16, roots: Vec<PathBuf>) {
@@ -89,6 +98,8 @@ pub fn start_server(port: u16, roots: Vec<PathBuf>) {
 async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
     let app = Router::new()
         .route("/", get(root_handler))
+        .route("/roots", get(get_roots))
+        .route("/roots", patch(patch_roots))
         .route("/random", get(random_path_handler))
         .route("/queue", get(queue_info_handler))
         .route("/reset", get(reset_queue_handler))
@@ -115,8 +126,11 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
             false
         }
     });
+    roots.shrink_to_fit();
 
-    ROOTS.get_or_init(move || roots);
+    let len = roots.len();
+    *ENABLED_ROOTS.write() = roots;
+    DISABLED_ROOTS.write().reserve_exact(len);
 
     let (queue_tx, queue_rx) = flume::bounded(QUEUE_SIZE);
     let queue_tx_clone = queue_tx.clone();
@@ -168,18 +182,80 @@ impl FileKind {
 struct RandomQuery {
     #[serde(default, rename = "kind")]
     kinds: FxHashSet<FileKind>,
+    #[serde(default, rename = "root")]
+    roots: FxHashSet<String>,
 }
 
 async fn root_handler() -> Html<&'static str> {
     Html(include_str!("index.html"))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RootJson {
+    path: String,
+    enabled: bool,
+}
+
+async fn get_roots() -> impl IntoResponse {
+    let enabled: Vec<_> = {
+        let roots = ENABLED_ROOTS.read();
+        roots.iter().map(|root| root.to_string_lossy().into_owned()).collect()
+    };
+    let disabled: Vec<_> = {
+        let roots = DISABLED_ROOTS.read();
+        roots.iter().map(|root| root.to_string_lossy().into_owned()).collect()
+    };
+    let roots: Vec<_> = enabled
+        .into_iter()
+        .map(|path| RootJson { path, enabled: true })
+        .chain(disabled.into_iter().map(|path| RootJson { path, enabled: false }))
+        .collect();
+    (queue_info(), Json(roots))
+}
+
+async fn patch_roots(body: Json<Vec<RootJson>>) -> impl IntoResponse {
+    let mut enabled_roots = ENABLED_ROOTS.write();
+    let mut disabled_roots = DISABLED_ROOTS.write();
+
+    for RootJson { path, enabled } in body.0 {
+        let path = Path::new(&path);
+        let (from, to) = if enabled {
+            (&mut disabled_roots, &mut enabled_roots)
+        } else {
+            (&mut enabled_roots, &mut disabled_roots)
+        };
+
+        let index = from.iter().position(|p| p == path);
+        let Some(index) = index else { continue };
+        let path = from.remove(index);
+        to.push(path);
+    }
+
+    let (queue_tx, queue_rx) = QUEUE_CHANNEL.get().unwrap();
+    for path in queue_rx.try_iter() {
+        if !enabled_roots.iter().any(|root| path.starts_with(root)) {
+            QUEUE_STATS.remove_path(&path);
+            continue;
+        }
+        tokio::spawn(async move {
+            queue_tx.send_async(path).await.expect("Queue channel disconnected");
+        });
+    }
+
+    (queue_info(), StatusCode::NO_CONTENT)
+}
+
 async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
-    let RandomQuery { kinds } = query.0;
+    let RandomQuery { kinds, roots } = query.0;
 
     let (queue_tx, queue_rx) = QUEUE_CHANNEL.get().unwrap();
     let path = loop {
         let path = queue_rx.recv_async().await.expect("Queue channel disconnected");
+
+        if !roots.is_empty() && !roots.iter().any(|root| path.starts_with(root)) {
+            QUEUE_STATS.remove_path(&path);
+            continue;
+        }
 
         if !kinds.is_empty()
             && let Some(file_kind) = FileKind::from_path(&path)
@@ -238,6 +314,7 @@ fn queue_info() -> [(HeaderName, String); 5] {
 
 async fn reset_queue_handler() -> impl IntoResponse {
     for _ in QUEUE_CHANNEL.get().unwrap().1.try_iter() {}
+    QUEUE_STATS.reset();
     StatusCode::NO_CONTENT
 }
 
@@ -246,15 +323,15 @@ async fn validate_path_middleware(request: Request, next: Next) -> Result<Respon
     let decoded_path = urlencoding::decode(path_query).map_err(|_| StatusCode::BAD_REQUEST)?;
     let requested_path = Path::new(decoded_path.as_ref());
 
-    let roots = ROOTS.get().unwrap();
-
-    let is_valid = roots.iter().any(|root| requested_path.starts_with(root));
+    let is_valid = {
+        let roots = ENABLED_ROOTS.read();
+        roots.iter().any(|root| requested_path.starts_with(root))
+    };
     if is_valid { Ok(next.run(request).await) } else { Err(StatusCode::NOT_FOUND) }
 }
 
 fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
     println!("Starting queue feeder");
-    let roots = ROOTS.get().unwrap();
     let mut cache = PathCache::default();
     loop {
         let queue_len = queue_tx.len();
@@ -263,7 +340,15 @@ fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
         let path = loop {
             let busy_timeout = Duration::from_millis(timeout_ms as u64);
             let scan_timeout = busy_timeout * 2;
-            match random_file_with_timeout(roots, scan_timeout, busy_timeout) {
+
+            let mut roots = ENABLED_ROOTS.read();
+            while roots.is_empty() {
+                drop(roots);
+                println!("No enabled roots, sleeping for 1s");
+                std::thread::sleep(Duration::from_secs(1));
+                roots = ENABLED_ROOTS.read();
+            }
+            match random_file_with_timeout(&roots, scan_timeout, busy_timeout) {
                 Some(path) => break path,
                 None => {
                     println!("No files found, increasing timeout");

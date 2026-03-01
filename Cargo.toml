@@ -6,6 +6,10 @@ edition = "2024"
 [lib]
 crate-type = ["lib", "cdylib"]
 
+[profile.release]
+lto = "fat"
+debug = 0
+
 [features]
 default = ["app", "http"]
 app = ["dep:glib", "dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:eframe", "dep:rfd", "dep:keepawake"]

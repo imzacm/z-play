@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,46 +7,40 @@ use parking_lot::Mutex;
 use rand::RngExt;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
-pub fn random_file<R>(roots: R) -> Option<PathBuf>
-where
-    R: Into<Cow<'static, [PathBuf]>>,
-{
+pub fn random_file(roots: &[PathBuf]) -> Option<PathBuf> {
     random_file_with_timeout(roots, Duration::from_secs(2), Duration::from_secs(1))
 }
 
-pub fn random_file_with_timeout<R>(
-    roots: R,
+pub fn random_file_with_timeout(
+    roots: &[PathBuf],
     scan_timeout: Duration,
     busy_timeout: Duration,
-) -> Option<PathBuf>
-where
-    R: Into<Cow<'static, [PathBuf]>>,
-{
-    let (path_tx, path_rx) = flume::unbounded();
+) -> Option<PathBuf> {
+    std::thread::scope(|scope| {
+        let (path_tx, path_rx) = flume::unbounded();
 
-    let roots = roots.into();
-    std::thread::spawn(move || {
-        let deadline = Instant::now() + scan_timeout;
-        let cancel = Arc::new(AtomicBool::new(false));
+        scope.spawn(move || {
+            let deadline = Instant::now() + scan_timeout;
+            let cancel = Arc::new(AtomicBool::new(false));
 
-        let path_tx = Mutex::new(Some(path_tx));
-        roots
-            .par_iter()
-            .take_any_while(|_| !cancel.load(Ordering::Relaxed) && Instant::now() <= deadline)
-            .map(|root| scan_root(root.as_ref(), deadline, busy_timeout, cancel.clone()))
-            .for_each(|result| {
-                if cancel.load(Ordering::Relaxed) || Instant::now() > deadline {
-                    *path_tx.lock() = None;
-                }
-                if let Some(path_tx) = &*path_tx.lock() {
-                    _ = path_tx.send(result);
-                }
-            });
-    });
+            let path_tx = Mutex::new(Some(path_tx));
+            roots
+                .par_iter()
+                .take_any_while(|_| !cancel.load(Ordering::Relaxed) && Instant::now() <= deadline)
+                .map(|root| scan_root(root.as_ref(), deadline, busy_timeout, cancel.clone()))
+                .for_each(|result| {
+                    if cancel.load(Ordering::Relaxed) || Instant::now() > deadline {
+                        *path_tx.lock() = None;
+                    }
+                    if let Some(path_tx) = &*path_tx.lock() {
+                        _ = path_tx.send(result);
+                    }
+                });
+        });
 
-    let result = path_rx.into_iter().reduce(reduce_scan_result);
-
-    result.and_then(|result| result.selected)
+        let result = path_rx.into_iter().reduce(reduce_scan_result);
+        result.and_then(|result| result.selected)
+    })
 }
 
 #[derive(Debug)]
