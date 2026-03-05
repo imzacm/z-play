@@ -3,3 +3,5 @@
 
 deploy.sh
 z-play-http.service
+immich-cleanup.sh
+*.env

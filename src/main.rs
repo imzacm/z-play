@@ -12,6 +12,9 @@ use z_play::app::App;
 
 #[allow(unreachable_code)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "dotenv")]
+    dotenv::dotenv().ok();
+
     if std::env::var_os("RUST_LOG").is_none() {
         unsafe { std::env::set_var("RUST_LOG", "z_play=info") };
     }

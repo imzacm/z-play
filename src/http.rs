@@ -20,7 +20,10 @@ use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 use z_play::path_cache::PathCache;
+#[cfg(not(feature = "immich"))]
 use z_play::random_files::random_file_with_timeout;
+#[cfg(feature = "immich")]
+use z_play::random_files_immich::{ImmichClient, random_file_with_timeout};
 
 const QUEUE_SIZE: usize = 1000;
 const QUEUE_COUNT_HEADER: HeaderName = HeaderName::from_static("x-queue-count");
@@ -146,6 +149,11 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
     roots.shrink_to_fit();
 
     let queue_tx = QUEUE.get_or_init(move || Queue::new(roots)).tx.clone();
+
+    #[cfg(feature = "immich")]
+    tokio::spawn(queue_feeder(queue_tx));
+
+    #[cfg(not(feature = "immich"))]
     std::thread::spawn(move || queue_feeder(queue_tx));
 
     let address = SocketAddr::from(([0, 0, 0, 0], port));
@@ -350,6 +358,64 @@ async fn validate_path_middleware(request: Request, next: Next) -> Result<Respon
     if is_valid { Ok(next.run(request).await) } else { Err(StatusCode::NOT_FOUND) }
 }
 
+#[cfg(feature = "immich")]
+async fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
+    let immich = {
+        let immich_url =
+            std::env::var("IMMICH_URL").expect("IMMICH_URL environment variable must be set");
+        let immich_api_key = std::env::var("IMMICH_API_KEY")
+            .expect("IMMICH_API_KEY environment variable must be set");
+
+        ImmichClient::new(immich_url, &immich_api_key)
+    };
+
+    println!("Starting queue feeder");
+    let queue = QUEUE.get().unwrap();
+    let mut cache = PathCache::default();
+    'main: loop {
+        let queue_len = queue_tx.len();
+        // Start at 100ms and scale up to 10s based on queue length.
+        let mut timeout_ms = 100 + (9900 * queue_len / QUEUE_SIZE);
+
+        let path = loop {
+            let mut roots = {
+                let roots = queue.enabled_roots.read();
+                while roots.is_empty() {
+                    drop(roots);
+                    println!("No enabled roots, sleeping for 1s");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue 'main;
+                }
+                roots.clone()
+            };
+
+            {
+                use rand::seq::SliceRandom;
+
+                let mut rng = rand::rng();
+                roots.shuffle(&mut rng);
+            }
+
+            let timeout = Duration::from_millis(timeout_ms as u64) * 2;
+
+            let path = random_file_with_timeout(&immich, &roots, timeout).await;
+            match path {
+                Some(path) => break path,
+                None => {
+                    timeout_ms += 1000;
+                    println!("No files found, increasing timeout to {timeout_ms}ms");
+                }
+            }
+        };
+
+        if cache.insert_or_remove(path.clone()) {
+            queue_tx.send_async(path.clone()).await.expect("Queue channel disconnected");
+            queue.stats.push_path(&path);
+        }
+    }
+}
+
+#[cfg(not(feature = "immich"))]
 fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
     println!("Starting queue feeder");
     let queue = QUEUE.get().unwrap();
@@ -382,8 +448,8 @@ fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
             match path {
                 Some(path) => break path,
                 None => {
-                    println!("No files found, increasing timeout");
                     timeout_ms += 1000;
+                    println!("No files found, increasing timeout to {timeout_ms}ms");
                 }
             }
         };

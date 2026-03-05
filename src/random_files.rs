@@ -44,9 +44,9 @@ pub fn random_file_with_timeout(
 }
 
 #[derive(Debug)]
-struct ScanResult<T> {
-    selected: Option<T>,
-    count: u64,
+pub struct ScanResult<T> {
+    pub selected: Option<T>,
+    pub count: u64,
 }
 
 impl<T> Default for ScanResult<T> {
@@ -95,7 +95,7 @@ fn scan_root(
         .reduce(ScanResult::default, reduce_scan_result)
 }
 
-fn reduce_scan_result(mut a: ScanResult<PathBuf>, b: ScanResult<PathBuf>) -> ScanResult<PathBuf> {
+pub fn reduce_scan_result<T>(mut a: ScanResult<T>, b: ScanResult<T>) -> ScanResult<T> {
     let total_count = a.count.saturating_add(b.count);
 
     // If one side is empty, just return the other

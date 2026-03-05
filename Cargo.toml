@@ -14,8 +14,11 @@ debug = 0
 default = ["app", "http"]
 app = ["dep:glib", "dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:eframe", "dep:rfd", "dep:keepawake"]
 http = ["dep:tokio", "dep:tower", "dep:tower-http", "dep:axum", "dep:axum-extra", "dep:urlencoding", "dep:serde"]
+immich = ["dep:serde", "dep:reqwest", "dep:camino", "parking_lot/send_guard"]
 
 [dependencies]
+dotenv ={ version = "0.15", optional = true }
+
 log = "0.4"
 env_logger = "0.11"
 
@@ -45,3 +48,7 @@ axum = { version = "0.8", optional = true }
 axum-extra = { version = "0.12", optional = true, features = ["query"] }
 urlencoding = { version = "2.1", optional = true }
 serde = { version = "1", optional = true, features = ["derive"] }
+
+# Immich
+reqwest = { version = "0.13", optional = true, features = ["json"] }
+camino = { version = "1", optional = true }
