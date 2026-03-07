@@ -44,7 +44,7 @@ async fn search_root(
     deadline: std::time::Instant,
 ) -> Result<ScanResult<Utf8PathBuf>, reqwest::Error> {
     let base = SearchRequest { original_path: root.as_str() };
-    let mut request = SearchPageRequest { base, page: 1, size: 100 };
+    let mut request = SearchPageRequest { base, page: 1, size: 1000 };
 
     let mut search_result = ScanResult::default();
     loop {
