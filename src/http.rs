@@ -378,16 +378,12 @@ async fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
         let mut timeout_ms = 100 + (9900 * queue_len / QUEUE_SIZE);
 
         let path = loop {
-            let mut roots = {
-                let roots = queue.enabled_roots.read();
-                while roots.is_empty() {
-                    drop(roots);
-                    println!("No enabled roots, sleeping for 1s");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    continue 'main;
-                }
-                roots.clone()
-            };
+            let mut roots = queue.enabled_roots.read().clone();
+            if roots.is_empty() {
+                println!("No enabled roots, sleeping for 1s");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue 'main;
+            }
 
             {
                 use rand::seq::SliceRandom;
@@ -426,24 +422,17 @@ fn queue_feeder(queue_tx: flume::Sender<PathBuf>) {
         let mut timeout_ms = 100 + (9900 * queue_len / QUEUE_SIZE);
 
         let path = loop {
-            let roots = queue.enabled_roots.read();
-            while roots.is_empty() {
-                drop(roots);
+            let mut roots = queue.enabled_roots.read().clone();
+            if roots.is_empty() {
                 println!("No enabled roots, sleeping for 1s");
-                std::thread::sleep(Duration::from_secs(1));
+                tokio::time::sleep(Duration::from_secs(1)).await;
                 continue 'main;
             }
 
             let busy_timeout = Duration::from_millis(timeout_ms as u64);
             let scan_timeout = busy_timeout * 2;
 
-            let path = if scan_timeout.as_secs() > 1 {
-                let roots_clone = roots.clone();
-                drop(roots);
-                random_file_with_timeout(&roots_clone, scan_timeout, busy_timeout)
-            } else {
-                random_file_with_timeout(&roots, scan_timeout, busy_timeout)
-            };
+            let path = random_file_with_timeout(&roots, scan_timeout, busy_timeout);
 
             match path {
                 Some(path) => break path,

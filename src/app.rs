@@ -296,7 +296,7 @@ fn pipeline_loop(
         let busy_timeout = Duration::from_millis(timeout_ms as u64);
         let scan_timeout = busy_timeout * 2;
 
-        let path = match random_file_with_timeout(roots, scan_timeout, busy_timeout) {
+        let path = match random_file_with_timeout(&roots, scan_timeout, busy_timeout) {
             Some(path) => path,
             None => {
                 log::info!("No files found, stopping pipeline loop");

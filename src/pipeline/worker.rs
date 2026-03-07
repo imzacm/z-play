@@ -171,10 +171,10 @@ fn worker_thread(command_rx: flume::Receiver<Command>) {
                         .add_watch_local(move |_bus, msg| {
                             let mut remove_guard = false;
                             match msg.view() {
-                                MessageView::Eos(_) => {
-                                    if event_tx.send(Event::EndOfStream).is_err() {
-                                        remove_guard = true;
-                                    }
+                                MessageView::Eos(_)
+                                    if event_tx.send(Event::EndOfStream).is_err() =>
+                                {
+                                    remove_guard = true;
                                 }
                                 MessageView::Error(error) => {
                                     let error = format!(
