@@ -395,7 +395,7 @@
 
                 removeEventListeners()
 
-                let path
+                let response
                 if (next) {
                     if (history.length === 0 || historyIndex === history.length - 1) {
                         const query = new URLSearchParams()
@@ -408,22 +408,26 @@
                         if (filterAudio.checked) {
                             query.append('kind', 'audio')
                         }
-                        path = await fetch(`random?${query}`, {signal: abortController.signal}).then(response => {
+                        response = await fetch(`random?${query}`, {signal: abortController.signal}).then(response => {
                             setQueueCountFromResponse(response)
-                            return response.text()
+                            return response.json()
                         })
-                        history.push(path)
+                        Object.freeze(response)
+                        history.push(response)
                         historyIndex++
                     } else {
                         historyIndex++
-                        path = history[historyIndex]
+                        response = history[historyIndex]
                     }
                 } else {
                     historyIndex--
-                    path = history[historyIndex]
+                    response = history[historyIndex]
                 }
 
-                console.log(path)
+                console.log(response)
+
+                const path = response.path
+                const fileKind = response.kind
 
                 // Reset loop tracking on new file
                 loopCount = 0
@@ -432,23 +436,21 @@
 
                 stop()
 
-                const extension = path.split('.').pop().toLowerCase()
-
-                const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'tiff']
-                const videoExtensions = ['mp4', 'mkv', 'webm', 'avi', 'mov', 'wmv', 'flv', 'mpeg']
-                const audioExtensions = ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac']
-
-                if (imageExtensions.includes(extension)) {
-                    active = image
-                } else if (videoExtensions.includes(extension)) {
-                    active = video
-                } else if (audioExtensions.includes(extension)) {
-                    active = audio
-                } else {
-                    console.error(`Unsupported file extension: ${extension}`)
-                    setLoading(false)
-                    setTimeout(nextFile, 1)
-                    return
+                switch (fileKind) {
+                    case 'image':
+                        active = image
+                        break
+                    case 'video':
+                        active = video
+                        break
+                    case 'audio':
+                        active = audio
+                        break
+                    default:
+                        console.error(`Unsupported file kind: ${fileKind}`)
+                        setLoading(false)
+                        setTimeout(nextFile, 1)
+                        return
                 }
 
                 playingText.innerText = path

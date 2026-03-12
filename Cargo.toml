@@ -29,7 +29,7 @@ jwalk = "0.8"
 rustc-hash = "2.1"
 
 flume = { version = "0.12", features = ["async"] }
-parking_lot = "0.12"
+parking_lot = { version = "0.12", features = ["nightly", "hardware-lock-elision"] }
 
 glib = { version = "0.22", optional = true }
 gstreamer = { version = "0.25", optional = true }
