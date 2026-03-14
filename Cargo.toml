@@ -55,5 +55,5 @@ camino = { version = "1", optional = true }
 
 [dependencies.z-queue]
 git = "https://github.com/imzacm/z-queue.git"
-rev = "8a7f6489813232821a323e9a466b5d66660ac920"
-features = ["hardware-lock-elision"]
+rev = "a6e1b9401fce6846d27752a4c0c8370023935320"
+features = ["hardware-lock-elision", "rand"]

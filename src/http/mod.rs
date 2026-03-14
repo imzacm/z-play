@@ -57,6 +57,7 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
         .route("/random", get(random_path_handler))
         .route("/queue", get(queue_info_handler))
         .route("/reset", get(reset_queue_handler))
+        .route("/shuffle", get(shuffle_queue_handler))
         .nest_service(
             "/files",
             ServiceBuilder::new()
@@ -286,6 +287,13 @@ async fn reset_queue_handler() -> impl IntoResponse {
 
     queue.reset();
     std::thread::spawn(|| queue_feeder(queue, Some(5)));
+    StatusCode::NO_CONTENT
+}
+
+async fn shuffle_queue_handler() -> impl IntoResponse {
+    let queue = QUEUE.get().unwrap();
+
+    queue.shuffle();
     StatusCode::NO_CONTENT
 }
 

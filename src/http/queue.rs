@@ -148,6 +148,11 @@ impl Queue {
 
         (path, file_kind)
     }
+
+    pub fn shuffle(&self) {
+        let mut rng = rand::rng();
+        self.queue.rand_shuffle(&mut rng);
+    }
 }
 
 #[derive(Default, Debug, Copy, Clone)]

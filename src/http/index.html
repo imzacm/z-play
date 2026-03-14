@@ -251,6 +251,7 @@
 
         let queueCountText
         let resetQueueButton
+        let shuffleQueueButton
         let filterImage
         let filterVideo
         let filterAudio
@@ -669,6 +670,7 @@
 
             queueCountText = document.querySelector('.queue-count')
             resetQueueButton = document.querySelector('.reset-queue')
+            shuffleQueueButton = document.querySelector('.shuffle-queue')
             filterImage = document.querySelector('.filter-image')
             filterVideo = document.querySelector('.filter-video')
             filterAudio = document.querySelector('.filter-audio')
@@ -684,6 +686,11 @@
             resetQueueButton.addEventListener('click', event => {
                 event.preventDefault()
                 fetch('reset').then(getQueueInfo)
+            })
+
+            shuffleQueueButton.addEventListener('click', event => {
+                event.preventDefault()
+                fetch('shuffle').then(getQueueInfo)
             })
 
             addPlayerButton.addEventListener('click', event => {
@@ -778,7 +785,8 @@
 </head>
 <body>
 <div class="queue-header">
-    <h3>Queue (<span class="queue-count"></span>) <a class="reset-queue" href="#">Reset queue</a></h3>
+    <h3>Queue (<span class="queue-count"></span>) <a class="reset-queue" href="#">Reset queue</a> <a
+            class="shuffle-queue" href="#">Shuffle queue</a></h3>
     <button class="options-btn" style="width: auto; height: auto; padding: 5px 15px;">Options</button>
     <h3>Players (<span class="player-count"></span>) <a class="add-player" href="#">Add Player</a></h3>
 </div>
