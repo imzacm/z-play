@@ -105,6 +105,9 @@ enum FileKind {
 }
 
 impl FileKind {
+    pub const ALL: [Self; 3] = [Self::Video, Self::Audio, Self::Image];
+    pub const NUM_VARIANTS: usize = Self::ALL.len();
+
     fn from_path<P>(path: P) -> Option<Self>
     where
         P: AsRef<Path>,
@@ -222,25 +225,9 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
         }
         counter += 1;
 
-        let (path, file_kind) = if roots.is_empty() && kinds.is_empty() {
-            queue.pop_async().await
-        } else {
-            queue
-                .find_pop_async(|path, file_kind| {
-                    let mut select_file = true;
-
-                    if !roots.is_empty() && !roots.iter().any(|root| path.starts_with(root)) {
-                        select_file = false;
-                    }
-
-                    if !kinds.is_empty() && !kinds.contains(&file_kind) {
-                        select_file = false;
-                    }
-
-                    select_file
-                })
-                .await
-        };
+        let filter_kinds = if kinds.is_empty() { None } else { Some(&kinds) };
+        let filter_roots = if roots.is_empty() { None } else { Some(&roots) };
+        let (path, file_kind) = queue.find_pop_async(filter_kinds, filter_roots).await;
 
         let future = precache_file(&path);
         match tokio::time::timeout(Duration::from_millis(100), future).await {

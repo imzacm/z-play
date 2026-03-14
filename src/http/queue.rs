@@ -1,17 +1,16 @@
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
 
 use parking_lot::{Mutex, RwLock};
-use rustc_hash::FxHashSet;
-use z_queue::ZQueue;
+use rustc_hash::{FxBuildHasher, FxHashSet};
+use z_queue::ZQueueMap;
 
 use crate::http::FileKind;
 
 pub struct Queue {
     enabled_roots: RwLock<Vec<PathBuf>>,
     disabled_roots: RwLock<Vec<PathBuf>>,
-    queue: ZQueue<(PathBuf, FileKind)>,
-    stats: QueueStats<AtomicUsize>,
+    queue: ZQueueMap<FileKind, PathBuf, FxBuildHasher>,
     queued_files: Mutex<FxHashSet<PathBuf>>,
 }
 
@@ -22,23 +21,24 @@ impl Queue {
         let len = roots.len();
         let mut queued_files = FxHashSet::default();
         queued_files.reserve(Self::QUEUE_SIZE);
+        let queue_size = NonZeroUsize::new(Self::QUEUE_SIZE).unwrap();
         Self {
             enabled_roots: RwLock::new(roots),
             disabled_roots: RwLock::new(Vec::with_capacity(len)),
-            queue: ZQueue::bounded(Self::QUEUE_SIZE),
-            stats: QueueStats::default(),
+            queue: ZQueueMap::bounded_crossbeam(FileKind::NUM_VARIANTS, queue_size),
             queued_files: Mutex::new(queued_files),
         }
     }
 
     pub fn len(&self) -> usize {
-        self.queue.len()
+        self.queue.total_len()
     }
 
-    pub fn stats(&self) -> QueueStats<usize> {
-        let video_count = self.stats.video_count.load(Ordering::Relaxed);
-        let image_count = self.stats.image_count.load(Ordering::Relaxed);
-        let audio_count = self.stats.audio_count.load(Ordering::Relaxed);
+    pub fn stats(&self) -> QueueStats {
+        let video_count = self.queue.len(&FileKind::Video);
+        let image_count = self.queue.len(&FileKind::Image);
+        let audio_count = self.queue.len(&FileKind::Audio);
+
         QueueStats { video_count, image_count, audio_count }
     }
 
@@ -63,12 +63,7 @@ impl Queue {
             return;
         };
 
-        self.queue.push_async((path, file_kind)).await;
-        match file_kind {
-            FileKind::Video => self.stats.video_count.fetch_add(1, Ordering::Relaxed),
-            FileKind::Image => self.stats.image_count.fetch_add(1, Ordering::Relaxed),
-            FileKind::Audio => self.stats.audio_count.fetch_add(1, Ordering::Relaxed),
-        };
+        self.queue.push_async(&file_kind, path).await;
     }
 
     pub fn push(&self, path: PathBuf) {
@@ -84,66 +79,54 @@ impl Queue {
             return;
         };
 
-        self.queue.push((path, file_kind));
-
-        match file_kind {
-            FileKind::Video => self.stats.video_count.fetch_add(1, Ordering::Relaxed),
-            FileKind::Image => self.stats.image_count.fetch_add(1, Ordering::Relaxed),
-            FileKind::Audio => self.stats.audio_count.fetch_add(1, Ordering::Relaxed),
-        };
+        self.queue.push(&file_kind, path);
     }
 
     pub fn reset(&self) {
         self.queue.clear();
         self.queued_files.lock().clear();
-        self.stats.video_count.store(0, Ordering::Relaxed);
-        self.stats.image_count.store(0, Ordering::Relaxed);
-        self.stats.audio_count.store(0, Ordering::Relaxed);
     }
 
     pub fn refresh_roots(&self) {
         let enabled_roots = self.enabled_roots.read();
         let mut queued_files = self.queued_files.lock();
 
-        self.queue.retain(|(path, file_kind)| {
-            if enabled_roots.iter().any(|root| path.starts_with(root)) {
-                return true;
-            }
+        self.queue.retain(
+            |_| true,
+            |path| {
+                if enabled_roots.iter().any(|root| path.starts_with(root)) {
+                    return true;
+                }
 
-            match file_kind {
-                FileKind::Video => self.stats.video_count.fetch_sub(1, Ordering::Relaxed),
-                FileKind::Image => self.stats.image_count.fetch_sub(1, Ordering::Relaxed),
-                FileKind::Audio => self.stats.audio_count.fetch_sub(1, Ordering::Relaxed),
-            };
-            queued_files.remove(path);
-            false
-        });
+                queued_files.remove(path);
+                false
+            },
+        );
     }
 
-    pub async fn pop_async(&self) -> (PathBuf, FileKind) {
-        let (path, file_kind) = self.queue.pop_async().await;
-        match file_kind {
-            FileKind::Video => self.stats.video_count.fetch_sub(1, Ordering::Relaxed),
-            FileKind::Image => self.stats.image_count.fetch_sub(1, Ordering::Relaxed),
-            FileKind::Audio => self.stats.audio_count.fetch_sub(1, Ordering::Relaxed),
-        };
+    pub async fn pop_async(&self, kinds: Option<&FxHashSet<FileKind>>) -> (PathBuf, FileKind) {
+        let key_fn =
+            |file_kind: &FileKind| -> bool { kinds.is_none_or(|kinds| kinds.contains(file_kind)) };
+
+        let (file_kind, path) = self.queue.pop_async(key_fn).await;
         self.queued_files.lock().remove(&path);
 
         (path, file_kind)
     }
 
-    pub async fn find_pop_async<F>(&self, mut find_fn: F) -> (PathBuf, FileKind)
-    where
-        F: FnMut(&Path, FileKind) -> bool,
-    {
-        let (path, file_kind) =
-            self.queue.find_async(move |(path, file_kind)| find_fn(path, *file_kind)).await;
+    pub async fn find_pop_async(
+        &self,
+        kinds: Option<&FxHashSet<FileKind>>,
+        roots: Option<&FxHashSet<String>>,
+    ) -> (PathBuf, FileKind) {
+        let Some(roots) = roots else { return self.pop_async(kinds).await };
 
-        match file_kind {
-            FileKind::Video => self.stats.video_count.fetch_sub(1, Ordering::Relaxed),
-            FileKind::Image => self.stats.image_count.fetch_sub(1, Ordering::Relaxed),
-            FileKind::Audio => self.stats.audio_count.fetch_sub(1, Ordering::Relaxed),
-        };
+        let key_fn =
+            |file_kind: &FileKind| -> bool { kinds.is_none_or(|kinds| kinds.contains(file_kind)) };
+
+        let find_fn = |path: &PathBuf| -> bool { roots.iter().any(|root| path.starts_with(root)) };
+
+        let (file_kind, path) = self.queue.find_async(key_fn, find_fn).await;
         self.queued_files.lock().remove(&path);
 
         (path, file_kind)
@@ -156,8 +139,8 @@ impl Queue {
 }
 
 #[derive(Default, Debug, Copy, Clone)]
-pub struct QueueStats<T> {
-    pub video_count: T,
-    pub image_count: T,
-    pub audio_count: T,
+pub struct QueueStats {
+    pub video_count: usize,
+    pub image_count: usize,
+    pub audio_count: usize,
 }
