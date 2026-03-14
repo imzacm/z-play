@@ -571,12 +571,12 @@
 
         function setQueueCountFromResponse(response) {
             const queueCount = response.headers.get('x-queue-count')
-            const queueSize = response.headers.get('x-queue-size')
+            // const queueSize = response.headers.get('x-queue-size')
             const videoCount = response.headers.get('x-queue-video-count')
             const imageCount = response.headers.get('x-queue-image-count')
             const audioCount = response.headers.get('x-queue-audio-count')
 
-            queueCountText.innerText = `${queueCount} / ${queueSize} - ${videoCount} videos, ${imageCount} images, ${audioCount} audio`
+            queueCountText.innerText = `${queueCount} - ${videoCount} videos, ${imageCount} images, ${audioCount} audio`
         }
 
         async function getQueueInfo() {
