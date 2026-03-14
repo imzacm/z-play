@@ -120,6 +120,18 @@ impl Queue {
         });
     }
 
+    pub async fn pop_async(&self) -> (PathBuf, FileKind) {
+        let (path, file_kind) = self.queue.pop_async().await;
+        match file_kind {
+            FileKind::Video => self.stats.video_count.fetch_sub(1, Ordering::Relaxed),
+            FileKind::Image => self.stats.image_count.fetch_sub(1, Ordering::Relaxed),
+            FileKind::Audio => self.stats.audio_count.fetch_sub(1, Ordering::Relaxed),
+        };
+        self.queued_files.lock().remove(&path);
+
+        (path, file_kind)
+    }
+
     pub async fn find_pop_async<F>(&self, mut find_fn: F) -> (PathBuf, FileKind)
     where
         F: FnMut(&Path, FileKind) -> bool,

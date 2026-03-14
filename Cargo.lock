@@ -6065,7 +6065,7 @@ dependencies = [
 [[package]]
 name = "z-queue"
 version = "0.1.0"
-source = "git+https://github.com/imzacm/z-queue.git?rev=0aac621ca3c94c50d3929f6ad1f3b66e89abfc1e#0aac621ca3c94c50d3929f6ad1f3b66e89abfc1e"
+source = "git+https://github.com/imzacm/z-queue.git?rev=8a7f6489813232821a323e9a466b5d66660ac920#8a7f6489813232821a323e9a466b5d66660ac920"
 dependencies = [
  "arrayvec",
  "crossbeam-utils",

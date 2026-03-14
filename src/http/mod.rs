@@ -221,21 +221,25 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
         }
         counter += 1;
 
-        let (path, file_kind) = queue
-            .find_pop_async(|path, file_kind| {
-                let mut select_file = true;
+        let (path, file_kind) = if roots.is_empty() && kinds.is_empty() {
+            queue.pop_async().await
+        } else {
+            queue
+                .find_pop_async(|path, file_kind| {
+                    let mut select_file = true;
 
-                if !roots.is_empty() && !roots.iter().any(|root| path.starts_with(root)) {
-                    select_file = false;
-                }
+                    if !roots.is_empty() && !roots.iter().any(|root| path.starts_with(root)) {
+                        select_file = false;
+                    }
 
-                if !kinds.is_empty() && !kinds.contains(&file_kind) {
-                    select_file = false;
-                }
+                    if !kinds.is_empty() && !kinds.contains(&file_kind) {
+                        select_file = false;
+                    }
 
-                select_file
-            })
-            .await;
+                    select_file
+                })
+                .await
+        };
 
         let future = precache_file(&path);
         match tokio::time::timeout(Duration::from_millis(100), future).await {
