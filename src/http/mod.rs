@@ -221,29 +221,25 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
         }
         counter += 1;
 
-        let path = queue.pop_async().await;
+        let (path, file_kind) = queue
+            .find_pop_async(|path, file_kind| {
+                let mut select_file = true;
 
-        if !roots.is_empty() && !roots.iter().any(|root| path.starts_with(root)) {
-            continue;
-        }
+                if !roots.is_empty() && !roots.iter().any(|root| path.starts_with(root)) {
+                    select_file = false;
+                }
 
-        if !kinds.is_empty()
-            && let Some(file_kind) = FileKind::from_path(&path)
-            && !kinds.contains(&file_kind)
-        {
-            tokio::spawn(queue.push_async(path));
-            continue;
-        }
+                if !kinds.is_empty() && !kinds.contains(&file_kind) {
+                    select_file = false;
+                }
+
+                select_file
+            })
+            .await;
 
         let future = precache_file(&path);
         match tokio::time::timeout(Duration::from_millis(100), future).await {
-            Ok(Ok(())) => {
-                if let Some(file_kind) = FileKind::from_path(&path) {
-                    break (path, file_kind);
-                } else {
-                    eprintln!("Unknown file type: {}", path.display());
-                }
-            }
+            Ok(Ok(())) => break (path, file_kind),
             Ok(Err(_)) => (),
             Err(_) => {
                 println!("Pre-caching file {} timed out", path.display());

@@ -6059,6 +6059,18 @@ dependencies = [
  "tower",
  "tower-http",
  "urlencoding",
+ "z-queue",
+]
+
+[[package]]
+name = "z-queue"
+version = "0.1.0"
+source = "git+https://github.com/imzacm/z-queue.git?rev=0aac621ca3c94c50d3929f6ad1f3b66e89abfc1e#0aac621ca3c94c50d3929f6ad1f3b66e89abfc1e"
+dependencies = [
+ "arrayvec",
+ "crossbeam-utils",
+ "event-listener",
+ "parking_lot",
 ]
 
 [[package]]
