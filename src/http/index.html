@@ -273,8 +273,13 @@
         let layoutMode
         let layoutCount
 
-        function addPlayer() {
+        function addPlayer(saveToStorage = true) {
             const playerNumber = ++playerCount
+
+            if (saveToStorage) {
+                localStorage.setItem('zplay_player_count', playerCount.toString())
+            }
+
             const abortController = new AbortController()
 
             const image = document.createElement('img')
@@ -627,6 +632,9 @@
                     return
                 }
                 playerCount--
+
+                localStorage.setItem('zplay_player_count', playerCount.toString())
+
                 abortController.abort('Player removed')
                 textObserver.disconnect()
                 stop()
@@ -874,7 +882,10 @@
             layoutMode.addEventListener('change', updateLayout);
             layoutCount.addEventListener('input', updateLayout);
 
-            addPlayer()
+            const storagePlayerCount = Number(localStorage.getItem('zplay_player_count') || 0) || 1
+            for (let i = 0; i < storagePlayerCount; i++) {
+                addPlayer(false)
+            }
             getQueueInfoPoll()
 
             // Modal Logic
