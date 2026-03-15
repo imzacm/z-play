@@ -24,6 +24,7 @@
             border: 1px solid #333;
             box-sizing: border-box;
             overflow: hidden;
+            transition: flex 0.2s ease-out, width 0.2s ease-out, height 0.2s ease-out;
         }
 
         .container {
@@ -89,6 +90,7 @@
             flex: 1;
             min-height: 0;
             width: 100%;
+            overflow: hidden;
         }
 
         /* Clean header layout */
@@ -167,8 +169,16 @@
             margin: 0 !important;
             font-size: 0.8rem;
             flex: 1; /* Takes up remaining space */
-            white-space: normal !important; /* Allows wrapping */
-            word-break: break-all; /* Ensures long file paths don't break layout */
+            white-space: nowrap !important;
+            overflow: hidden;
+            min-width: 0;
+            /*word-break: break-all; !* Ensures long file paths don't break layout *!*/
+        }
+
+        .playing-info-content {
+            display: inline-block;
+            white-space: nowrap;
+            transform-origin: left center; /* Ensures it shrinks toward the left */
         }
 
         .controls {
@@ -276,12 +286,15 @@
 
             const root = document.createElement('div')
             root.classList.add('root')
+            root.dataset.aspectRatio = "1"
             root.innerHTML = `
 <div class="player-header">
     <h2 class="playing-info">
-        Playing <span class="playing-text"></span>
-        <span class="loop-info" style="display: none; color: #888;">(Loop: <span class="loop-count">0</span>)</span>
-        <span class="loading" aria-hidden="true" style="display: none;"></span>
+        <div class="playing-info-content">
+            Playing <span class="playing-text"></span>
+            <span class="loop-info" style="display: none; color: #888;">(Loop: <span class="loop-count">0</span>)</span>
+            <span class="loading" aria-hidden="true" style="display: none;"></span>
+        </div>
     </h2>
     <h2 class="controls"><a class="remove" href="#">Remove player</a></h2>
 </div>
@@ -292,6 +305,7 @@
 </div>
 <div class="nav">
     <button class="prev">Previous</button>
+    <button class="toggle-play" style="display: none;">Pause</button>
     <button class="next">Next</button>
 </div>`
 
@@ -309,6 +323,34 @@
 
             const progressBarContainer = root.querySelector('.progress-bar-container')
             const progressBarFill = root.querySelector('.progress-bar-fill')
+
+            const playingInfo = root.querySelector('.playing-info')
+            const playingInfoContent = root.querySelector('.playing-info-content')
+
+            const togglePlayButton = root.querySelector('.toggle-play')
+            let imageStartTime = 0
+            let imageRemainingTime = 0
+            let isImagePaused = false
+
+            let videoProgressFrame = null;
+
+            // Calculates and applies the exact scale needed to fit the text
+            const adjustTextScale = () => {
+                // Reset transform temporarily so we can measure the true width
+                playingInfoContent.style.transform = 'none'
+
+                const containerWidth = playingInfo.clientWidth
+                const contentWidth = playingInfoContent.scrollWidth
+
+                if (contentWidth > containerWidth && containerWidth > 0) {
+                    const scale = containerWidth / contentWidth
+                    playingInfoContent.style.transform = `scale(${scale})`
+                }
+            }
+
+            // Automatically triggers the scale adjustment if the layout changes size
+            const textObserver = new ResizeObserver(() => adjustTextScale())
+            textObserver.observe(playingInfo)
 
             if (playerCount === 1) {
                 removeButton.style.display = 'none'
@@ -332,32 +374,80 @@
                 }
             }
 
-            const startImageTimer = () => {
-                clearTimeout(imageTimeout)
+            const updateAspectRatio = () => {
+                if (active === null) {
+                    return
+                }
 
-                // Reset progress bar state
-                progressBarContainer.style.display = 'none'
-                progressBarFill.style.transition = 'none'
-                progressBarFill.style.width = '0%'
+                let ratio = 1
+                if (active.tagName === 'IMG' && active.naturalHeight) {
+                    ratio = active.naturalWidth / active.naturalHeight
+                } else if (active.tagName === 'VIDEO' && active.videoHeight) {
+                    ratio = active.videoWidth / active.videoHeight
+                } else if (active.tagName === 'AUDIO') {
+                    ratio = 3
+                }
+
+                root.dataset.aspectRatio = ratio.toString()
+                updateLayout()
+            }
+
+            const startImageTimer = (isResuming = false) => {
+                clearTimeout(imageTimeout)
 
                 const isDurationEnabled = document.querySelector('.opt-img-duration-enabled').checked
                 const duration = parseInt(document.querySelector('.opt-img-duration').value)
                 const isAutoSkip = document.querySelector('.opt-autoskip').checked
                 const isLoop = document.querySelector('.opt-loop').checked
 
-                if (isDurationEnabled && !isNaN(duration) && duration > 0 && (isAutoSkip || isLoop)) {
-                    progressBarContainer.style.display = 'block'
+                // If timer shouldn't run, ensure button is hidden
+                if (!isDurationEnabled || isNaN(duration) || duration <= 0 || (!isAutoSkip && !isLoop)) {
+                    togglePlayButton.style.display = 'none'
+                    return
+                }
 
-                    // Small timeout to allow the 'transition: none' and 'width: 0' to register
-                    // before we start the animation
-                    setTimeout(() => {
-                        progressBarFill.style.transition = `width ${duration}s linear`
-                        progressBarFill.style.width = '100%'
-                    }, 50)
+                togglePlayButton.style.display = ''
+                togglePlayButton.innerText = 'Pause'
+                progressBarContainer.style.display = 'block'
+                isImagePaused = false
 
-                    imageTimeout = setTimeout(() => {
-                        onEnded()
-                    }, duration * 1000)
+                if (!isResuming) {
+                    imageRemainingTime = duration * 1000
+                    progressBarFill.style.transition = 'none'
+                    progressBarFill.style.width = '0%'
+                }
+
+                setTimeout(() => {
+                    if (isImagePaused) return // Catch edge case if paused instantly
+                    progressBarFill.style.transition = `width ${imageRemainingTime}ms linear`
+                    progressBarFill.style.width = '100%'
+                }, 50)
+
+                imageStartTime = Date.now()
+                imageTimeout = setTimeout(() => {
+                    onEnded()
+                }, imageRemainingTime)
+            }
+
+            const toggleImageTimer = () => {
+                if (active !== image || !imageTimeout) return
+
+                if (isImagePaused) {
+                    // Resume
+                    startImageTimer(true)
+                } else {
+                    // Pause
+                    clearTimeout(imageTimeout)
+                    const elapsed = Date.now() - imageStartTime
+                    imageRemainingTime -= elapsed
+                    isImagePaused = true
+                    togglePlayButton.innerText = 'Play'
+
+                    // Freeze the progress bar exactly where it is
+                    const computedWidth = parseFloat(window.getComputedStyle(progressBarFill).width)
+                    const parentWidth = parseFloat(window.getComputedStyle(progressBarContainer).width)
+                    progressBarFill.style.transition = 'none'
+                    progressBarFill.style.width = `${(computedWidth / parentWidth) * 100}%`
                 }
             }
 
@@ -367,6 +457,9 @@
                 }
                 removeEventListeners()
                 clearTimeout(imageTimeout)
+                if (videoProgressFrame) {
+                    cancelAnimationFrame(videoProgressFrame)
+                }
 
                 // Hide progress bar on stop/switch
                 progressBarContainer.style.display = 'none'
@@ -443,9 +536,11 @@
                         break
                     case 'video':
                         active = video
+                        togglePlayButton.style.display = 'none'
                         break
                     case 'audio':
                         active = audio
+                        togglePlayButton.style.display = 'none'
                         break
                     default:
                         console.error(`Unsupported file kind: ${fileKind}`)
@@ -455,6 +550,7 @@
                 }
 
                 playingText.innerText = path
+                adjustTextScale()
 
                 active.onerror = onError
                 active.onload = onLoad
@@ -478,6 +574,14 @@
             function onCanPlay() {
                 active.style.display = ''
                 setLoading(false)
+                updateAspectRatio()
+
+                if (active === video) {
+                    progressBarContainer.style.display = 'block'
+                    progressBarFill.style.transition = 'none' // Snap to 0 instantly
+                    progressBarFill.style.width = '0%'
+                }
+
                 if (document.querySelector('.opt-autoplay').checked) {
                     this.play().catch(error => console.warn("Autoplay blocked:", error))
                 }
@@ -492,6 +596,7 @@
             const onLoad = () => {
                 active.style.display = ''
                 setLoading(false)
+                updateAspectRatio()
                 if (active === image) {
                     startImageTimer()
                 }
@@ -523,6 +628,7 @@
                 }
                 playerCount--
                 abortController.abort('Player removed')
+                textObserver.disconnect()
                 stop()
                 root.remove()
 
@@ -552,6 +658,57 @@
             nextButton.addEventListener('click', event => {
                 event.preventDefault()
                 nextFile()
+            })
+
+            togglePlayButton.addEventListener('click', event => {
+                event.preventDefault()
+                toggleImageTimer()
+            })
+
+            // Allow clicking the image itself to pause/play
+            image.addEventListener('click', toggleImageTimer)
+            image.style.cursor = 'pointer'
+
+            // The smooth animation loop
+            const updateVideoProgress = () => {
+                if (active !== video || !video.duration) {
+                    return
+                }
+
+                // Turn off CSS transitions because we are manually updating it 60fps
+                progressBarFill.style.transition = 'none'
+
+                const percentage = (video.currentTime / video.duration) * 100
+                progressBarFill.style.width = `${percentage}%`
+
+                // Keep looping as long as the video is playing
+                if (!video.paused && !video.ended) {
+                    videoProgressFrame = requestAnimationFrame(updateVideoProgress)
+                }
+            }
+
+            // Start the loop when the video plays
+            video.addEventListener('play', () => {
+                progressBarContainer.style.display = 'block'
+                if (videoProgressFrame) {
+                    cancelAnimationFrame(videoProgressFrame)
+                }
+                videoProgressFrame = requestAnimationFrame(updateVideoProgress)
+            })
+
+            // Pause the loop when the video pauses
+            video.addEventListener('pause', () => {
+                if (videoProgressFrame) {
+                    cancelAnimationFrame(videoProgressFrame)
+                }
+            })
+
+            // Update the bar immediately if the user scrubs/seeks while paused
+            video.addEventListener('seeked', () => {
+                if (active === video && video.paused && video.duration) {
+                    const percentage = (video.currentTime / video.duration) * 100
+                    progressBarFill.style.width = `${percentage}%`
+                }
             })
 
             playersContainer.appendChild(root)
@@ -606,26 +763,42 @@
         function updateLayout() {
             const mode = layoutMode.value
             let count = parseInt(layoutCount.value) || 1
-            count = Math.min(count, playerCount)
+            count = Math.min(count, playerCount) || 1 // Avoid division by zero
 
-            // Set the direction on the container
-            playersContainer.style.flexDirection = mode === 'horizontal' ? 'row' : 'column';
+            playersContainer.style.flexDirection = mode === 'horizontal' ? 'row' : 'column'
 
-            // Calculate how many columns (if vertical) or rows (if horizontal) we need
-            const crossCount = Math.ceil(playerCount / count) || 1;
+            const players = Array.from(document.querySelectorAll('.root'))
+            const crossCount = Math.ceil(players.length / count) || 1
 
-            for (const player of document.querySelectorAll('.root')) {
-                // flex-basis sets the size along the MAIN axis (width for rows, height for columns)
-                player.style.flex = `1 1 calc(100% / ${count})`;
+            // Process elements in chunks (rows or columns)
+            for (let i = 0; i < players.length; i += count) {
+                const chunk = players.slice(i, i + count)
 
                 if (mode === 'horizontal') {
-                    // Horizontal mode: Flexbox handles width. We strictly divide the height.
-                    player.style.width = '';
-                    player.style.height = `calc(100% / ${crossCount})`;
+                    // Width scales directly with aspect ratio (wider ratio = wider element)
+                    const totalRatio = chunk.reduce((sum, p) => sum + (parseFloat(p.dataset.aspectRatio) || 1), 0)
+
+                    for (const player of chunk) {
+                        const ratio = parseFloat(player.dataset.aspectRatio) || 1
+                        const pct = (ratio / totalRatio) * 100
+
+                        // calc(pct - 0.01px) prevents strict float rounding from wrapping rows prematurely
+                        player.style.flex = `0 0 calc(${pct}% - 0.01px)`
+                        player.style.width = ''
+                        player.style.height = `calc(100% / ${crossCount})`
+                    }
                 } else {
-                    // Vertical mode: Flexbox handles height. We strictly divide the width.
-                    player.style.height = '';
-                    player.style.width = `calc(100% / ${crossCount})`;
+                    // Height scales inversely with aspect ratio (taller media = taller element)
+                    const totalInvRatio = chunk.reduce((sum, p) => sum + (1 / (parseFloat(p.dataset.aspectRatio) || 1)), 0)
+
+                    for (const player of chunk) {
+                        const invRatio = 1 / (parseFloat(player.dataset.aspectRatio) || 1)
+                        const pct = (invRatio / totalInvRatio) * 100
+
+                        player.style.flex = `0 0 calc(${pct}% - 0.01px)`
+                        player.style.height = ''
+                        player.style.width = `calc(100% / ${crossCount})`
+                    }
                 }
             }
         }
