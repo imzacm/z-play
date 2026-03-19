@@ -4,13 +4,14 @@ use std::path::PathBuf;
 use parking_lot::{Mutex, RwLock};
 use rustc_hash::{FxBuildHasher, FxHashSet};
 use z_queue::ZQueueMap;
+use z_queue::container::CrossbeamArrayQueue;
 
 use crate::http::FileKind;
 
 pub struct Queue {
     enabled_roots: RwLock<Vec<PathBuf>>,
     disabled_roots: RwLock<Vec<PathBuf>>,
-    queue: ZQueueMap<FileKind, PathBuf, FxBuildHasher>,
+    queue: ZQueueMap<FileKind, CrossbeamArrayQueue<PathBuf>, FxBuildHasher>,
     queued_files: Mutex<FxHashSet<PathBuf>>,
 }
 
@@ -25,7 +26,7 @@ impl Queue {
         Self {
             enabled_roots: RwLock::new(roots),
             disabled_roots: RwLock::new(Vec::with_capacity(len)),
-            queue: ZQueueMap::bounded_crossbeam(FileKind::NUM_VARIANTS, queue_size),
+            queue: ZQueueMap::bounded(FileKind::NUM_VARIANTS, queue_size),
             queued_files: Mutex::new(queued_files),
         }
     }
@@ -63,7 +64,7 @@ impl Queue {
             return;
         };
 
-        self.queue.push_async(&file_kind, path).await;
+        self.queue.push_async(file_kind, path).await;
     }
 
     pub fn push(&self, path: PathBuf) {
@@ -79,7 +80,7 @@ impl Queue {
             return;
         };
 
-        self.queue.push(&file_kind, path);
+        self.queue.push(file_kind, path);
     }
 
     pub fn reset(&self) {
