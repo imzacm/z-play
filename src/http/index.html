@@ -825,17 +825,135 @@
 
         function updateLayout() {
             const mode = layoutMode.value
-            let count = parseInt(layoutCount.value) || 1
-            count = Math.min(count, playerCount) || 1 // Avoid division by zero
+            layoutCount.disabled = mode === 'fluid'
 
+            let count = parseInt(layoutCount.value) || 1
+
+            const domPlayers = Array.from(document.querySelectorAll('.root'))
+            const N = domPlayers.length
+
+            count = Math.min(count, N) || 1
+
+            if (N === 0) return
+
+            if (mode === 'fluid') {
+                const rect = playersContainer.getBoundingClientRect();
+                const W = rect.width || window.innerWidth;
+                const H = rect.height || window.innerHeight;
+
+                const players = [...domPlayers].sort((a, b) =>
+                    (parseFloat(b.dataset.aspectRatio) || 1) - (parseFloat(a.dataset.aspectRatio) || 1)
+                );
+
+                let bestMinArea = -1;
+                let bestTotalArea = -1;
+                let bestPartition = null;
+                let bestRowHeights = [];
+                let bestTotalHeight = 0;
+
+                // Evaluates the actual physical area of the media on screen
+                const evaluate = (partition) => {
+                    let totalH = 0;
+                    let rHeights = [];
+                    for (let row of partition) {
+                        let sumR = row.reduce((s, p) => s + (parseFloat(p.dataset.aspectRatio) || 1), 0);
+                        let rH = W / sumR;
+                        rHeights.push(rH);
+                        totalH += rH;
+                    }
+
+                    // The missing piece: we must limit scaling to exactly fit within the height H!
+                    // If totalH > H, we must scale down. If totalH <= H, we stop at 1 so width isn't broken.
+                    const mediaScale = Math.min(1, H / totalH);
+
+                    let minArea = Infinity;
+                    let totalArea = 0;
+
+                    for (let i = 0; i < partition.length; i++) {
+                        let scaledH = rHeights[i] * mediaScale;
+                        for (let p of partition[i]) {
+                            let r = parseFloat(p.dataset.aspectRatio) || 1;
+                            let area = (scaledH * r) * scaledH;
+                            if (area < minArea) minArea = area;
+                            totalArea += area;
+                        }
+                    }
+
+                    const EPSILON = 0.1;
+                    if (minArea - bestMinArea > EPSILON || (Math.abs(minArea - bestMinArea) <= EPSILON && totalArea > bestTotalArea)) {
+                        bestMinArea = minArea;
+                        bestTotalArea = totalArea;
+                        bestPartition = partition;
+                        bestRowHeights = rHeights;
+                        bestTotalHeight = totalH;
+                    }
+                };
+
+                // Use exhaustive recursion for N <= 12 to guarantee mathematically perfect boundaries.
+                if (N <= 12) {
+                    const getPartitions = (arr) => {
+                        if (arr.length === 0) return [[]];
+                        let res = [];
+                        for (let i = 1; i <= arr.length; i++) {
+                            let first = arr.slice(0, i);
+                            let rests = getPartitions(arr.slice(i));
+                            for (let r of rests) {
+                                res.push([first, ...r]);
+                            }
+                        }
+                        return res;
+                    };
+                    const allParts = getPartitions(players);
+                    for (let part of allParts) {
+                        evaluate(part);
+                    }
+                } else {
+                    // Fallback to simpler chunking method for massive player counts to prevent freezing
+                    for (let c = 1; c <= N; c++) {
+                        let part = [];
+                        for (let i = 0; i < N; i += c) {
+                            part.push(players.slice(i, i + c));
+                        }
+                        evaluate(part);
+                    }
+                }
+
+                const scale = Math.min(1, H / bestTotalHeight);
+
+                playersContainer.style.flexDirection = 'row';
+                playersContainer.style.alignContent = 'flex-start'; // <--- Anchors everything safely to the top
+                playersContainer.style.justifyContent = 'center';
+
+                let orderCounter = 0;
+                for (let i = 0; i < bestPartition.length; i++) {
+                    const row = bestPartition[i];
+                    const actualRowH = bestRowHeights[i] * scale;
+                    const heightPct = (actualRowH / H) * 100;
+
+                    for (let j = 0; j < row.length; j++) {
+                        const player = row[j];
+                        const ratio = parseFloat(player.dataset.aspectRatio) || 1;
+                        const widthPct = ((actualRowH * ratio) / W) * 100;
+
+                        player.style.flex = `0 0 calc(${widthPct}% - 0.01px)`;
+                        player.style.height = `${heightPct}%`;
+                        player.style.width = '';
+                        player.style.order = orderCounter++;
+                    }
+                }
+                return;
+            }
+
+            // Restore defaults for Horizontal / Vertical modes
+            playersContainer.style.alignContent = 'stretch';
+            playersContainer.style.justifyContent = 'flex-start';
             playersContainer.style.flexDirection = mode === 'horizontal' ? 'row' : 'column'
 
-            const players = Array.from(document.querySelectorAll('.root'))
-            const crossCount = Math.ceil(players.length / count) || 1
+            const crossCount = Math.ceil(N / count) || 1
 
-            // Process elements in chunks (rows or columns)
-            for (let i = 0; i < players.length; i += count) {
-                const chunk = players.slice(i, i + count)
+            // Process elements in chunks (rows or columns) using the original unsorted DOM order
+            for (let i = 0; i < N; i += count) {
+                const chunk = domPlayers.slice(i, i + count)
 
                 if (mode === 'horizontal') {
                     // Width scales directly with aspect ratio (wider ratio = wider element)
@@ -849,6 +967,7 @@
                         player.style.flex = `0 0 calc(${pct}% - 0.01px)`
                         player.style.width = ''
                         player.style.height = `calc(100% / ${crossCount})`
+                        player.style.order = '' // Reset fluid reordering
                     }
                 } else {
                     // Height scales inversely with aspect ratio (taller media = taller element)
@@ -861,6 +980,7 @@
                         player.style.flex = `0 0 calc(${pct}% - 0.01px)`
                         player.style.height = ''
                         player.style.width = `calc(100% / ${crossCount})`
+                        player.style.order = '' // Reset fluid reordering
                     }
                 }
             }
@@ -936,6 +1056,9 @@
 
             layoutMode.addEventListener('change', updateLayout);
             layoutCount.addEventListener('input', updateLayout);
+
+            // Re-fire our layout logic so fluid mode scales cleanly on window resize
+            window.addEventListener('resize', updateLayout);
 
             const storagePlayerCount = Number(localStorage.getItem('zplay_player_count') || 0) || 1
             for (let i = 0; i < storagePlayerCount; i++) {
@@ -1078,6 +1201,7 @@
                     <select class="layout-mode">
                         <option value="horizontal">Columns</option>
                         <option value="vertical">Rows</option>
+                        <option value="fluid">Fluid</option>
                     </select>
                 </label>
                 <label>Count: <input type="number" class="layout-count" value="3" min="1" max="10" style="width: 40px;"></label>
