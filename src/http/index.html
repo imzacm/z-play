@@ -53,13 +53,15 @@
         .nav {
             display: flex;
             flex-shrink: 0;
-            height: 10%;
+            height: 5%;
         }
 
         .nav button {
             width: auto;
             height: 100%;
             flex: 1 1 0;
+            font-size: 0.75rem;
+            padding: 2px;
         }
 
         .loading {
@@ -214,6 +216,32 @@
         .container {
             position: relative;
         }
+
+        /* --- Fullscreen Features --- */
+        html:fullscreen {
+            background-color: #000;
+        }
+
+        html:fullscreen .queue-header,
+        html:fullscreen .player-header,
+        .root:fullscreen .player-header {
+            display: none;
+        }
+
+        html:fullscreen .root,
+        .root:fullscreen {
+            border: none;
+            background-color: #000;
+        }
+
+        .controls a {
+            color: #000;
+            text-decoration: none;
+        }
+
+        .controls a:hover {
+            text-decoration: underline;
+        }
     </style>
 
     <script>
@@ -301,7 +329,7 @@
             <span class="loading" aria-hidden="true" style="display: none;"></span>
         </div>
     </h2>
-    <h2 class="controls"><a class="remove" href="#">Remove player</a></h2>
+    <h2 class="controls"><a class="fullscreen-btn" href="#">Fullscreen</a><span class="remove-divider"> | </span><a class="remove" href="#">Remove player</a></h2>
 </div>
 <div class="container">
     <div class="progress-bar-container" style="display: none;">
@@ -316,6 +344,8 @@
 
             const playingText = root.querySelector('.playing-text')
             const removeButton = root.querySelector('.remove')
+            const fullscreenBtn = root.querySelector('.fullscreen-btn')
+            const removeDivider = root.querySelector('.remove-divider')
             const container = root.querySelector('.container')
             const nextButton = root.querySelector('.next')
             const prevButton = root.querySelector('.prev')
@@ -359,6 +389,7 @@
 
             if (playerCount === 1) {
                 removeButton.style.display = 'none'
+                removeDivider.style.display = 'none'
             }
 
             const setLoading = value => {
@@ -453,6 +484,15 @@
                     const parentWidth = parseFloat(window.getComputedStyle(progressBarContainer).width)
                     progressBarFill.style.transition = 'none'
                     progressBarFill.style.width = `${(computedWidth / parentWidth) * 100}%`
+                }
+            }
+
+            // Allow programmatic pausing from outside the player
+            root.pauseMedia = () => {
+                if (active === image) {
+                    if (!isImagePaused && imageTimeout) toggleImageTimer()
+                } else if (active !== null) {
+                    active.pause()
                 }
             }
 
@@ -626,6 +666,15 @@
                 }
             }
 
+            fullscreenBtn.addEventListener('click', event => {
+                event.preventDefault()
+                if (!document.fullscreenElement) {
+                    root.requestFullscreen().catch(err => console.error(err))
+                } else {
+                    document.exitFullscreen()
+                }
+            })
+
             removeButton.addEventListener('click', event => {
                 event.preventDefault()
                 if (playerCount === 1) {
@@ -644,6 +693,9 @@
 
                 if (playerCount === 1) {
                     for (const element of document.querySelectorAll('.remove')) {
+                        element.style.display = 'none'
+                    }
+                    for (const element of document.querySelectorAll('.remove-divider')) {
                         element.style.display = 'none'
                     }
                 }
@@ -728,6 +780,9 @@
             if (playerCount > 1) {
                 for (const element of document.querySelectorAll('.remove')) {
                     element.style.display = ''
+                }
+                for (const element of document.querySelectorAll('.remove-divider')) {
+                    element.style.display = 'inline'
                 }
             }
 
@@ -888,6 +943,28 @@
             }
             getQueueInfoPoll()
 
+            // Fullscreen all trigger
+            document.querySelector('.fullscreen-all-btn').addEventListener('click', event => {
+                event.preventDefault()
+                if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen().catch(err => console.error(err))
+                } else {
+                    document.exitFullscreen()
+                }
+            })
+
+            // Pause other players when one goes fullscreen
+            document.addEventListener('fullscreenchange', () => {
+                const fsElement = document.fullscreenElement
+                if (fsElement && fsElement.classList.contains('root')) {
+                    document.querySelectorAll('.root').forEach(r => {
+                        if (r !== fsElement && typeof r.pauseMedia === 'function') {
+                            r.pauseMedia()
+                        }
+                    })
+                }
+            })
+
             // Modal Logic
             const modal = document.getElementById('options-modal')
             document.querySelector('.options-btn').addEventListener('click', async () => {
@@ -971,7 +1048,10 @@
 <div class="queue-header">
     <h3>Queue (<span class="queue-count"></span>) <a class="reset-queue" href="#">Reset queue</a> <a
             class="shuffle-queue" href="#">Shuffle queue</a></h3>
-    <button class="options-btn" style="width: auto; height: auto; padding: 5px 15px;">Options</button>
+    <div>
+        <button class="options-btn" style="width: auto; height: auto; padding: 5px 15px;">Options</button>
+        <button class="fullscreen-all-btn" style="width: auto; height: auto; padding: 5px 15px;">Fullscreen All</button>
+    </div>
     <h3>Players (<span class="player-count"></span>) <a class="add-player" href="#">Add Player</a></h3>
 </div>
 
