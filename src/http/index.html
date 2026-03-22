@@ -24,7 +24,7 @@
             border: 1px solid #333;
             box-sizing: border-box;
             overflow: hidden;
-            transition: flex 0.2s ease-out, width 0.2s ease-out, height 0.2s ease-out;
+            /* Transition removed here: FLIP animation now handles layout smoothly */
         }
 
         .container {
@@ -425,7 +425,7 @@
                 }
 
                 root.dataset.aspectRatio = ratio.toString()
-                updateLayout()
+                updateLayout(true) // Animate when natural ratio changes
             }
 
             const startImageTimer = (isResuming = false) => {
@@ -700,7 +700,7 @@
                     }
                 }
 
-                updateLayout()
+                updateLayout(true) // Animate gracefully when a player disappears
             })
 
             for (const element of [image, video, audio]) {
@@ -786,7 +786,7 @@
                 }
             }
 
-            updateLayout()
+            updateLayout(true) // Animate new elements flowing in
         }
 
         function setQueueCountFromResponse(response) {
@@ -823,7 +823,9 @@
 
         }
 
-        function updateLayout() {
+        function updateLayout(animate = true) {
+            const shouldAnimate = animate === true;
+
             const mode = layoutMode.value
             layoutCount.disabled = mode === 'fluid'
 
@@ -836,6 +838,14 @@
 
             if (N === 0) return
 
+            // --- 1. RECORD FIRST POSITIONS (For FLIP Animation) ---
+            let firstRects;
+            if (shouldAnimate) {
+                firstRects = new Map();
+                domPlayers.forEach(p => firstRects.set(p, p.getBoundingClientRect()));
+            }
+
+            // --- 2. APPLY LAYOUT MATH ---
             if (mode === 'fluid') {
                 const rect = playersContainer.getBoundingClientRect();
                 const W = rect.width || window.innerWidth;
@@ -851,7 +861,6 @@
                 let bestRowHeights = [];
                 let bestTotalHeight = 0;
 
-                // Evaluates the actual physical area of the media on screen
                 const evaluate = (partition) => {
                     let totalH = 0;
                     let rHeights = [];
@@ -862,8 +871,6 @@
                         totalH += rH;
                     }
 
-                    // The missing piece: we must limit scaling to exactly fit within the height H!
-                    // If totalH > H, we must scale down. If totalH <= H, we stop at 1 so width isn't broken.
                     const mediaScale = Math.min(1, H / totalH);
 
                     let minArea = Infinity;
@@ -889,7 +896,6 @@
                     }
                 };
 
-                // Use exhaustive recursion for N <= 12 to guarantee mathematically perfect boundaries.
                 if (N <= 12) {
                     const getPartitions = (arr) => {
                         if (arr.length === 0) return [[]];
@@ -908,7 +914,6 @@
                         evaluate(part);
                     }
                 } else {
-                    // Fallback to simpler chunking method for massive player counts to prevent freezing
                     for (let c = 1; c <= N; c++) {
                         let part = [];
                         for (let i = 0; i < N; i += c) {
@@ -921,7 +926,7 @@
                 const scale = Math.min(1, H / bestTotalHeight);
 
                 playersContainer.style.flexDirection = 'row';
-                playersContainer.style.alignContent = 'flex-start'; // <--- Anchors everything safely to the top
+                playersContainer.style.alignContent = 'flex-start';
                 playersContainer.style.justifyContent = 'center';
 
                 let orderCounter = 0;
@@ -941,48 +946,66 @@
                         player.style.order = orderCounter++;
                     }
                 }
-                return;
-            }
+            } else {
+                playersContainer.style.alignContent = 'stretch';
+                playersContainer.style.justifyContent = 'flex-start';
+                playersContainer.style.flexDirection = mode === 'horizontal' ? 'row' : 'column'
 
-            // Restore defaults for Horizontal / Vertical modes
-            playersContainer.style.alignContent = 'stretch';
-            playersContainer.style.justifyContent = 'flex-start';
-            playersContainer.style.flexDirection = mode === 'horizontal' ? 'row' : 'column'
+                const crossCount = Math.ceil(N / count) || 1
 
-            const crossCount = Math.ceil(N / count) || 1
+                for (let i = 0; i < N; i += count) {
+                    const chunk = domPlayers.slice(i, i + count)
 
-            // Process elements in chunks (rows or columns) using the original unsorted DOM order
-            for (let i = 0; i < N; i += count) {
-                const chunk = domPlayers.slice(i, i + count)
+                    if (mode === 'horizontal') {
+                        const totalRatio = chunk.reduce((sum, p) => sum + (parseFloat(p.dataset.aspectRatio) || 1), 0)
 
-                if (mode === 'horizontal') {
-                    // Width scales directly with aspect ratio (wider ratio = wider element)
-                    const totalRatio = chunk.reduce((sum, p) => sum + (parseFloat(p.dataset.aspectRatio) || 1), 0)
+                        for (const player of chunk) {
+                            const ratio = parseFloat(player.dataset.aspectRatio) || 1
+                            const pct = (ratio / totalRatio) * 100
 
-                    for (const player of chunk) {
-                        const ratio = parseFloat(player.dataset.aspectRatio) || 1
-                        const pct = (ratio / totalRatio) * 100
+                            player.style.flex = `0 0 calc(${pct}% - 0.01px)`
+                            player.style.width = ''
+                            player.style.height = `calc(100% / ${crossCount})`
+                            player.style.order = ''
+                        }
+                    } else {
+                        const totalInvRatio = chunk.reduce((sum, p) => sum + (1 / (parseFloat(p.dataset.aspectRatio) || 1)), 0)
 
-                        // calc(pct - 0.01px) prevents strict float rounding from wrapping rows prematurely
-                        player.style.flex = `0 0 calc(${pct}% - 0.01px)`
-                        player.style.width = ''
-                        player.style.height = `calc(100% / ${crossCount})`
-                        player.style.order = '' // Reset fluid reordering
-                    }
-                } else {
-                    // Height scales inversely with aspect ratio (taller media = taller element)
-                    const totalInvRatio = chunk.reduce((sum, p) => sum + (1 / (parseFloat(p.dataset.aspectRatio) || 1)), 0)
+                        for (const player of chunk) {
+                            const invRatio = 1 / (parseFloat(player.dataset.aspectRatio) || 1)
+                            const pct = (invRatio / totalInvRatio) * 100
 
-                    for (const player of chunk) {
-                        const invRatio = 1 / (parseFloat(player.dataset.aspectRatio) || 1)
-                        const pct = (invRatio / totalInvRatio) * 100
-
-                        player.style.flex = `0 0 calc(${pct}% - 0.01px)`
-                        player.style.height = ''
-                        player.style.width = `calc(100% / ${crossCount})`
-                        player.style.order = '' // Reset fluid reordering
+                            player.style.flex = `0 0 calc(${pct}% - 0.01px)`
+                            player.style.height = ''
+                            player.style.width = `calc(100% / ${crossCount})`
+                            player.style.order = ''
+                        }
                     }
                 }
+            }
+
+            // --- 3. ANIMATE TO NEW POSITIONS ---
+            if (shouldAnimate) {
+                domPlayers.forEach(p => {
+                    const first = firstRects.get(p);
+                    const last = p.getBoundingClientRect();
+
+                    const deltaX = first.left - last.left;
+                    const deltaY = first.top - last.top;
+                    const deltaW = first.width / (last.width || 1);
+                    const deltaH = first.height / (last.height || 1);
+
+                    // Only animate if the element actually moved or changed size
+                    if (deltaX !== 0 || deltaY !== 0 || deltaW !== 1 || deltaH !== 1) {
+                        p.animate([
+                            { transformOrigin: 'top left', transform: `translate(${deltaX}px, ${deltaY}px) scale(${deltaW}, ${deltaH})` },
+                            { transformOrigin: 'top left', transform: 'none' }
+                        ], {
+                            duration: 350,
+                            easing: 'cubic-bezier(0.25, 0.8, 0.25, 1)'
+                        });
+                    }
+                });
             }
         }
 
@@ -1054,11 +1077,10 @@
                 addPlayer()
             })
 
-            layoutMode.addEventListener('change', updateLayout);
-            layoutCount.addEventListener('input', updateLayout);
-
-            // Re-fire our layout logic so fluid mode scales cleanly on window resize
-            window.addEventListener('resize', updateLayout);
+            // Only trigger the animation on purposeful layout changes, NOT while continuously dragging the window size
+            layoutMode.addEventListener('change', () => updateLayout(true));
+            layoutCount.addEventListener('input', () => updateLayout(true));
+            window.addEventListener('resize', () => updateLayout(false));
 
             const storagePlayerCount = Number(localStorage.getItem('zplay_player_count') || 0) || 1
             for (let i = 0; i < storagePlayerCount; i++) {
