@@ -55,5 +55,5 @@ camino = { version = "1", optional = true }
 
 [dependencies.z-queue]
 git = "https://github.com/imzacm/z-queue.git"
-rev = "60d4e2a124b9fbc2442a2f0c764629350b06b7a7"
-features = ["map", "rand"]
+rev = "24243e2b3ec836bd57e66e70ebb0d094a8776962"
+features = ["map", "triomphe", "rand"]

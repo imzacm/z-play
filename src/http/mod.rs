@@ -220,7 +220,7 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
             std::thread::spawn(|| queue_feeder(queue, Some(5)));
         }
 
-        if counter > Queue::QUEUE_SIZE {
+        if counter > (Queue::QUEUE_SIZE * 3) {
             panic!("Queue does not contain files matching filter");
         }
         counter += 1;
