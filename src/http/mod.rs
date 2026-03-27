@@ -162,8 +162,8 @@ struct RootJson {
 async fn get_roots() -> impl IntoResponse {
     let queue = QUEUE.get().unwrap();
 
-    let enabled_roots = queue.enabled_roots().read();
-    let disabled_roots = queue.disabled_roots().read();
+    let (enabled_roots, disabled_roots) =
+        tokio::join!(queue.enabled_roots().read_async(), queue.disabled_roots().read_async());
 
     let roots = enabled_roots
         .iter()
@@ -178,8 +178,8 @@ async fn get_roots() -> impl IntoResponse {
 async fn patch_roots(body: Json<Vec<RootJson>>) -> impl IntoResponse {
     let queue = QUEUE.get().unwrap();
 
-    let mut enabled_roots = queue.enabled_roots().write();
-    let mut disabled_roots = queue.disabled_roots().write();
+    let (mut enabled_roots, mut disabled_roots) =
+        tokio::join!(queue.enabled_roots().write_async(), queue.disabled_roots().write_async());
 
     for RootJson { path, enabled } in body.0 {
         let path = Path::new(&path);
@@ -198,7 +198,7 @@ async fn patch_roots(body: Json<Vec<RootJson>>) -> impl IntoResponse {
     drop(enabled_roots);
     drop(disabled_roots);
 
-    queue.refresh_roots();
+    queue.refresh_roots().await;
 
     (queue_info(), StatusCode::NO_CONTENT)
 }
@@ -272,7 +272,7 @@ fn queue_info() -> [(HeaderName, String); 5] {
 async fn reset_queue_handler() -> impl IntoResponse {
     let queue = QUEUE.get().unwrap();
 
-    queue.reset();
+    queue.reset().await;
     std::thread::spawn(|| queue_feeder(queue, Some(5)));
     StatusCode::NO_CONTENT
 }
@@ -291,7 +291,7 @@ async fn validate_path_middleware(request: Request, next: Next) -> Result<Respon
 
     let is_valid = {
         let queue = QUEUE.get().unwrap();
-        let roots = queue.enabled_roots().read();
+        let roots = queue.enabled_roots().read_async().await;
         roots.iter().any(|root| requested_path.starts_with(root))
     };
     if is_valid { Ok(next.run(request).await) } else { Err(StatusCode::NOT_FOUND) }
@@ -315,7 +315,7 @@ async fn immich_queue_feeder(queue: &Queue) {
         let mut timeout_ms = 100 + (9900 * queue_len / Queue::QUEUE_SIZE);
 
         let path = loop {
-            let mut roots = queue.enabled_roots().read().clone();
+            let mut roots = queue.enabled_roots().read_async().await.clone();
             if roots.is_empty() {
                 println!("No enabled roots, sleeping for 1s");
                 tokio::time::sleep(Duration::from_secs(1)).await;

@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
 use rand::RngExt;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
+use z_sync::Lock;
 
 pub fn random_file(roots: &[PathBuf]) -> Option<PathBuf> {
     random_file_with_timeout(roots, Duration::from_secs(2), Duration::from_secs(1))
@@ -17,29 +17,32 @@ pub fn random_file_with_timeout(
     busy_timeout: Duration,
 ) -> Option<PathBuf> {
     std::thread::scope(|scope| {
-        let (path_tx, path_rx) = flume::unbounded();
+        let (path_tx, path_rx) = z_queue::defaults::unbounded();
 
         scope.spawn(move || {
             let deadline = Instant::now() + scan_timeout;
             let cancel = Arc::new(AtomicBool::new(false));
 
-            let path_tx = Mutex::new(Some(path_tx));
+            let path_tx = Lock::new(Some(path_tx));
             roots
                 .par_iter()
                 .take_any_while(|_| !cancel.load(Ordering::Relaxed) && Instant::now() <= deadline)
                 .map(|root| scan_root(root.as_ref(), deadline, busy_timeout, cancel.clone()))
                 .for_each(|result| {
                     if cancel.load(Ordering::Relaxed) || Instant::now() > deadline {
-                        *path_tx.lock() = None;
+                        *path_tx.write() = None;
                     }
-                    if let Some(path_tx) = &*path_tx.lock() {
+                    if let Some(path_tx) = &*path_tx.read() {
                         _ = path_tx.send(result);
                     }
                 });
         });
 
-        let result = path_rx.into_iter().reduce(reduce_scan_result);
-        result.and_then(|result| result.selected)
+        let mut result = ScanResult::default();
+        while let Ok(Some(scan_result)) = path_rx.try_recv() {
+            result = reduce_scan_result(result, scan_result);
+        }
+        result.selected
     })
 }
 

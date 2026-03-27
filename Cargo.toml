@@ -28,7 +28,6 @@ rayon = "1.11"
 jwalk = "0.8"
 rustc-hash = "2.1"
 
-flume = { version = "0.12", features = ["async"] }
 parking_lot = { version = "0.12", features = ["nightly", "hardware-lock-elision"] }
 
 glib = { version = "0.22", optional = true }
@@ -53,7 +52,9 @@ serde = { version = "1", optional = true, features = ["derive"] }
 reqwest = { version = "0.13", optional = true, features = ["json"] }
 camino = { version = "1", optional = true }
 
+z-sync = { git = "https://github.com/imzacm/z-sync.git", rev = "6795d07e38b291705e3ff8ebd044d545530e3b15" }
+
 [dependencies.z-queue]
 git = "https://github.com/imzacm/z-queue.git"
-rev = "24243e2b3ec836bd57e66e70ebb0d094a8776962"
-features = ["map", "triomphe", "rand"]
+rev = "4b1c4a812da05555b967adda2631421b231b1ed0"
+features = ["map", "triomphe", "rand", "crossbeam-queue"]

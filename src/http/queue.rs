@@ -1,18 +1,18 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
-use parking_lot::{Mutex, RwLock};
 use rustc_hash::{FxBuildHasher, FxHashSet};
 use z_queue::ZQueueMap;
 use z_queue::container::CrossbeamArrayQueue;
+use z_sync::Lock;
 
 use crate::http::FileKind;
 
 pub struct Queue {
-    enabled_roots: RwLock<Vec<PathBuf>>,
-    disabled_roots: RwLock<Vec<PathBuf>>,
+    enabled_roots: Lock<Vec<PathBuf>>,
+    disabled_roots: Lock<Vec<PathBuf>>,
     queue: ZQueueMap<FileKind, CrossbeamArrayQueue<PathBuf>, FxBuildHasher>,
-    queued_files: Mutex<FxHashSet<PathBuf>>,
+    queued_files: Lock<FxHashSet<PathBuf>>,
 }
 
 impl Queue {
@@ -24,10 +24,10 @@ impl Queue {
         queued_files.reserve(Self::QUEUE_SIZE);
         let queue_size = NonZeroUsize::new(Self::QUEUE_SIZE).unwrap();
         Self {
-            enabled_roots: RwLock::new(roots),
-            disabled_roots: RwLock::new(Vec::with_capacity(len)),
+            enabled_roots: Lock::new(roots),
+            disabled_roots: Lock::new(Vec::with_capacity(len)),
             queue: ZQueueMap::bounded(FileKind::NUM_VARIANTS, queue_size),
-            queued_files: Mutex::new(queued_files),
+            queued_files: Lock::new(queued_files),
         }
     }
 
@@ -43,17 +43,17 @@ impl Queue {
         QueueStats { video_count, image_count, audio_count }
     }
 
-    pub fn enabled_roots(&self) -> &RwLock<Vec<PathBuf>> {
+    pub fn enabled_roots(&self) -> &Lock<Vec<PathBuf>> {
         &self.enabled_roots
     }
 
-    pub fn disabled_roots(&self) -> &RwLock<Vec<PathBuf>> {
+    pub fn disabled_roots(&self) -> &Lock<Vec<PathBuf>> {
         &self.disabled_roots
     }
 
     pub async fn push_async(&self, path: PathBuf) {
         {
-            let mut queued_files = self.queued_files.lock();
+            let mut queued_files = self.queued_files.write_async().await;
             if queued_files.contains(&path) {
                 return;
             }
@@ -69,7 +69,7 @@ impl Queue {
 
     pub fn push(&self, path: PathBuf) {
         {
-            let mut queued_files = self.queued_files.lock();
+            let mut queued_files = self.queued_files.write();
             if queued_files.contains(&path) {
                 return;
             }
@@ -83,26 +83,28 @@ impl Queue {
         self.queue.push(file_kind, path);
     }
 
-    pub fn reset(&self) {
-        self.queue.clear();
-        self.queued_files.lock().clear();
+    pub async fn reset(&self) {
+        self.queue.clear_async().await;
+        self.queued_files.write_async().await.clear();
     }
 
-    pub fn refresh_roots(&self) {
+    pub async fn refresh_roots(&self) {
         let enabled_roots = self.enabled_roots.read();
-        let mut queued_files = self.queued_files.lock();
+        let mut queued_files = self.queued_files.write_async().await;
 
-        self.queue.retain(
-            |_| true,
-            |path| {
-                if enabled_roots.iter().any(|root| path.starts_with(root)) {
-                    return true;
-                }
+        self.queue
+            .retain_async(
+                |_| true,
+                |path| {
+                    if enabled_roots.iter().any(|root| path.starts_with(root)) {
+                        return true;
+                    }
 
-                queued_files.remove(path);
-                false
-            },
-        );
+                    queued_files.remove(path);
+                    false
+                },
+            )
+            .await;
     }
 
     pub async fn pop_async(&self, kinds: Option<&FxHashSet<FileKind>>) -> (PathBuf, FileKind) {
@@ -110,7 +112,7 @@ impl Queue {
             |file_kind: &FileKind| -> bool { kinds.is_none_or(|kinds| kinds.contains(file_kind)) };
 
         let (file_kind, path) = self.queue.pop_async(key_fn).await;
-        self.queued_files.lock().remove(&path);
+        self.queued_files.write_async().await.remove(&path);
 
         (path, file_kind)
     }
@@ -128,7 +130,7 @@ impl Queue {
         let find_fn = |path: &PathBuf| -> bool { roots.iter().any(|root| path.starts_with(root)) };
 
         let (file_kind, path) = self.queue.find_async(key_fn, find_fn).await;
-        self.queued_files.lock().remove(&path);
+        self.queued_files.write_async().await.remove(&path);
 
         (path, file_kind)
     }
