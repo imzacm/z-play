@@ -12,6 +12,9 @@
             height: 100dvh;
             max-width: 100vw;
             overflow-x: hidden;
+
+            /*padding-bottom: env(safe-area-inset-bottom);*/
+            /*box-sizing: border-box;*/
         }
 
         .root {
@@ -938,7 +941,11 @@
                     for (let j = 0; j < row.length; j++) {
                         const player = row[j];
                         const ratio = parseFloat(player.dataset.aspectRatio) || 1;
-                        const widthPct = ((actualRowH * ratio) / W) * 100;
+
+                        // Calculate width using the unscaled row height.
+                        // This guarantees the row items will always sum to exactly 100% width,
+                        // preventing the next row from wrapping up onto the same line.
+                        const widthPct = ((bestRowHeights[i] * ratio) / W) * 100;
 
                         player.style.flex = `0 0 calc(${widthPct}% - 0.01px)`;
                         player.style.height = `${heightPct}%`;
