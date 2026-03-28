@@ -6091,7 +6091,7 @@ dependencies = [
  "tower-http",
  "urlencoding",
  "z-queue",
- "z-sync",
+ "z-sync 0.1.0 (git+https://github.com/imzacm/z-sync.git?rev=a32daba7e5eecd47e78917f2adea2534f41118f7)",
 ]
 
 [[package]]
@@ -6106,13 +6106,22 @@ dependencies = [
  "rand 0.10.0",
  "scc",
  "triomphe",
- "z-sync",
+ "z-sync 0.1.0 (git+https://github.com/imzacm/z-sync.git?rev=6795d07e38b291705e3ff8ebd044d545530e3b15)",
 ]
 
 [[package]]
 name = "z-sync"
 version = "0.1.0"
 source = "git+https://github.com/imzacm/z-sync.git?rev=6795d07e38b291705e3ff8ebd044d545530e3b15#6795d07e38b291705e3ff8ebd044d545530e3b15"
+dependencies = [
+ "crossbeam-utils",
+ "parking_lot_core",
+]
+
+[[package]]
+name = "z-sync"
+version = "0.1.0"
+source = "git+https://github.com/imzacm/z-sync.git?rev=a32daba7e5eecd47e78917f2adea2534f41118f7#a32daba7e5eecd47e78917f2adea2534f41118f7"
 dependencies = [
  "crossbeam-utils",
  "parking_lot_core",

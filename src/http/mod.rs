@@ -216,10 +216,6 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
 
     let mut counter = 0;
     let (path, file_kind) = loop {
-        if queue.len() <= 5 {
-            std::thread::spawn(|| queue_feeder(queue, Some(5)));
-        }
-
         if counter > (Queue::QUEUE_SIZE * 3) {
             panic!("Queue does not contain files matching filter");
         }
@@ -273,7 +269,7 @@ async fn reset_queue_handler() -> impl IntoResponse {
     let queue = QUEUE.get().unwrap();
 
     queue.reset().await;
-    std::thread::spawn(|| queue_feeder(queue, Some(5)));
+    std::thread::spawn(|| queue_feeder(queue, Some(1)));
     StatusCode::NO_CONTENT
 }
 
@@ -337,7 +333,7 @@ async fn immich_queue_feeder(queue: &Queue) {
                 Some(path) => break path,
                 None => {
                     timeout_ms += 1000;
-                    println!("No files found, increasing timeout to {timeout_ms}ms");
+                    println!("[Immich] No files found, increasing timeout to {timeout_ms}ms");
                 }
             }
         };

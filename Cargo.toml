@@ -52,7 +52,7 @@ serde = { version = "1", optional = true, features = ["derive"] }
 reqwest = { version = "0.13", optional = true, features = ["json"] }
 camino = { version = "1", optional = true }
 
-z-sync = { git = "https://github.com/imzacm/z-sync.git", rev = "6795d07e38b291705e3ff8ebd044d545530e3b15" }
+z-sync = { git = "https://github.com/imzacm/z-sync.git", rev = "a32daba7e5eecd47e78917f2adea2534f41118f7" }
 
 [dependencies.z-queue]
 git = "https://github.com/imzacm/z-queue.git"

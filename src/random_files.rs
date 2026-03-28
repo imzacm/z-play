@@ -39,7 +39,7 @@ pub fn random_file_with_timeout(
         });
 
         let mut result = ScanResult::default();
-        while let Ok(Some(scan_result)) = path_rx.try_recv() {
+        for scan_result in path_rx {
             result = reduce_scan_result(result, scan_result);
         }
         result.selected

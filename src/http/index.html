@@ -8,26 +8,23 @@
         body {
             margin: 0;
             display: flex;
-            flex-direction: column; /* Stacks the header and the player container vertically */
+            flex-direction: column;
             height: 100dvh;
             max-width: 100vw;
             overflow-x: hidden;
-
-            /*padding-bottom: env(safe-area-inset-bottom);*/
-            /*box-sizing: border-box;*/
+            background-color: #f0f0f0;
         }
 
         .root {
-            flex: 1 1 auto; /* Default: grow to fill space */
             display: flex;
             flex-direction: column;
-            min-height: 0;
-            min-width: 0;
-            width: auto;
             border: 1px solid #333;
             box-sizing: border-box;
             overflow: hidden;
-            /* Transition removed here: FLIP animation now handles layout smoothly */
+            background-color: #000;
+            width: 100%;
+            height: 100%;
+            /* Transitions removed; FLIP handles all smooth movement */
         }
 
         .container {
@@ -38,6 +35,7 @@
             align-items: center;
             overflow: hidden;
             background-color: #000;
+            position: relative;
         }
 
         .container img, .container video {
@@ -71,7 +69,7 @@
             width: 0.8em;
             height: 0.8em;
             border: 2px solid rgba(0, 0, 0, 0.1);
-            border-left-color: #3498db; /* The accent color */
+            border-left-color: #3498db;
             border-radius: 50%;
             display: inline-block;
             vertical-align: middle;
@@ -88,17 +86,20 @@
             }
         }
 
+        /* --- CSS GRID CONTAINER --- */
         .players-container {
-            display: flex;
-            flex-wrap: wrap;
-            align-content: stretch; /* Ensures items fill vertical space if wrapped */
+            display: grid;
+            /* grid properties are assigned dynamically in JS based on mode */
             flex: 1;
             min-height: 0;
             width: 100%;
             overflow: hidden;
+            padding: 2px;
+            gap: 2px;
+            box-sizing: border-box;
+            align-content: start;
         }
 
-        /* Clean header layout */
         .queue-header {
             display: flex;
             justify-content: space-between;
@@ -108,6 +109,7 @@
             box-sizing: border-box;
             flex-shrink: 0;
             gap: 10px;
+            background-color: #fff;
         }
 
         .queue-header h3 {
@@ -115,7 +117,6 @@
             font-size: 0.9rem;
         }
 
-        /* Native Dialog Styling */
         dialog {
             border: 1px solid #333;
             border-radius: 8px;
@@ -126,7 +127,7 @@
         }
 
         dialog::backdrop {
-            background: rgba(0, 0, 0, 0.6); /* Darkens the background */
+            background: rgba(0, 0, 0, 0.6);
         }
 
         .modal-content {
@@ -159,38 +160,42 @@
             font-size: 0.85rem;
         }
 
-        /* Container for the top labels */
         .player-header {
             display: flex;
             justify-content: space-between;
-            align-items: flex-start; /* Aligns items to the top */
+            align-items: flex-start;
             padding: 5px;
             gap: 10px;
-            background: #f8f8f8; /* Optional: adds a slight definition to the header */
+            background: #f8f8f8;
             border-bottom: 1px solid #333;
+            cursor: grab;
+            touch-action: none;
+        }
+
+        .player-header:active {
+            cursor: grabbing;
         }
 
         .playing-info {
             margin: 0 !important;
             font-size: 0.8rem;
-            flex: 1; /* Takes up remaining space */
+            flex: 1;
             white-space: nowrap !important;
             overflow: hidden;
             min-width: 0;
-            /*word-break: break-all; !* Ensures long file paths don't break layout *!*/
         }
 
         .playing-info-content {
             display: inline-block;
             white-space: nowrap;
-            transform-origin: left center; /* Ensures it shrinks toward the left */
+            transform-origin: left center;
         }
 
         .controls {
             margin: 0 !important;
             font-size: 0.8rem;
-            white-space: nowrap; /* Keeps "Remove player" on one line */
-            flex-shrink: 0; /* Prevents the button from being squished */
+            white-space: nowrap;
+            flex-shrink: 0;
         }
 
         h2 {
@@ -211,16 +216,10 @@
             height: 100%;
             width: 0%;
             background: #3498db;
-            /* Using linear timing for a steady countdown feel */
             transition: width linear;
         }
 
-        /* Ensure the container is positioned relatively so the bar stays inside */
-        .container {
-            position: relative;
-        }
-
-        /* --- Fullscreen Features --- */
+        /* --- Fullscreen --- */
         html:fullscreen {
             background-color: #000;
         }
@@ -245,84 +244,83 @@
         .controls a:hover {
             text-decoration: underline;
         }
+
+        /* --- Drag and Resize --- */
+        .root.is-dragging {
+            opacity: 0.5;
+            transform: scale(0.98);
+            z-index: 100;
+            border-color: #3498db;
+        }
+
+        .resize-handle {
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            width: 30px;
+            height: 30px;
+            cursor: nwse-resize;
+            z-index: 20;
+            touch-action: none;
+            background: linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, 0.5) 50%);
+        }
+
+        .root:fullscreen .resize-handle {
+            display: none;
+        }
     </style>
 
     <script>
         const settingsManager = {
-            // Selectors for all the inputs we want to save
             fields: [
                 '.filter-image', '.filter-video', '.filter-audio',
                 '.layout-mode', '.layout-count',
                 '.opt-autoplay', '.opt-autoskip', '.opt-loop',
                 '.opt-img-duration-enabled', '.opt-img-duration'
             ],
-
             save() {
                 const data = {};
                 this.fields.forEach(selector => {
                     const el = document.querySelector(selector);
                     if (!el) return;
-                    // Store checked state for checkboxes, value for everything else
                     data[selector] = el.type === 'checkbox' ? el.checked : el.value;
                 });
                 localStorage.setItem('zplay_settings', JSON.stringify(data));
             },
-
             load() {
                 const data = JSON.parse(localStorage.getItem('zplay_settings'));
                 if (!data) return;
-
                 Object.entries(data).forEach(([selector, value]) => {
                     const el = document.querySelector(selector);
                     if (!el) return;
-
-                    if (el.type === 'checkbox') {
-                        el.checked = value;
-                    } else {
-                        el.value = value;
-                    }
-                    // Manually trigger change events so your UI logic (like disabling inputs) runs
+                    if (el.type === 'checkbox') el.checked = value;
+                    else el.value = value;
                     el.dispatchEvent(new Event('change'));
                     el.dispatchEvent(new Event('input'));
                 });
             }
         }
 
-        let playerCount = 0
-
-        let queueCountText
-        let resetQueueButton
-        let shuffleQueueButton
-        let filterImage
-        let filterVideo
-        let filterAudio
-        let playersContainer
-
-        let playerCountText
-        let addPlayerButton
-
-        let layoutMode
-        let layoutCount
+        let playerCount = 0;
+        let queueCountText, resetQueueButton, shuffleQueueButton, filterImage, filterVideo, filterAudio,
+            playersContainer;
+        let playerCountText, addPlayerButton, layoutMode, layoutCount;
 
         function addPlayer(saveToStorage = true) {
-            const playerNumber = ++playerCount
+            const playerNumber = ++playerCount;
+            if (saveToStorage) localStorage.setItem('zplay_player_count', playerCount.toString());
 
-            if (saveToStorage) {
-                localStorage.setItem('zplay_player_count', playerCount.toString())
-            }
+            const abortController = new AbortController();
+            const image = document.createElement('img');
+            const video = document.createElement('video');
+            const audio = document.createElement('audio');
 
-            const abortController = new AbortController()
+            let active = null;
+            let loading = false;
 
-            const image = document.createElement('img')
-            const video = document.createElement('video')
-            const audio = document.createElement('audio')
-
-            let active = null
-            let loading = false
-
-            const root = document.createElement('div')
-            root.classList.add('root')
-            root.dataset.aspectRatio = "1"
+            const root = document.createElement('div');
+            root.classList.add('root');
+            root.dataset.aspectRatio = "1";
             root.innerHTML = `
 <div class="player-header">
     <h2 class="playing-info">
@@ -335,664 +333,632 @@
     <h2 class="controls"><a class="fullscreen-btn" href="#">Fullscreen</a><span class="remove-divider"> | </span><a class="remove" href="#">Remove player</a></h2>
 </div>
 <div class="container">
-    <div class="progress-bar-container" style="display: none;">
-        <div class="progress-bar-fill"></div>
-    </div>
+    <div class="progress-bar-container" style="display: none;"><div class="progress-bar-fill"></div></div>
 </div>
 <div class="nav">
     <button class="prev">Previous</button>
     <button class="toggle-play" style="display: none;">Pause</button>
     <button class="next">Next</button>
-</div>`
+</div>`;
 
-            const playingText = root.querySelector('.playing-text')
-            const removeButton = root.querySelector('.remove')
-            const fullscreenBtn = root.querySelector('.fullscreen-btn')
-            const removeDivider = root.querySelector('.remove-divider')
-            const container = root.querySelector('.container')
-            const nextButton = root.querySelector('.next')
-            const prevButton = root.querySelector('.prev')
-            const loadingSpinner = root.querySelector('.loading')
+            const playingText = root.querySelector('.playing-text');
+            const removeButton = root.querySelector('.remove');
+            const fullscreenBtn = root.querySelector('.fullscreen-btn');
+            const removeDivider = root.querySelector('.remove-divider');
+            const container = root.querySelector('.container');
+            const nextButton = root.querySelector('.next');
+            const prevButton = root.querySelector('.prev');
+            const loadingSpinner = root.querySelector('.loading');
+            const loopInfo = root.querySelector('.loop-info');
+            const loopCountText = root.querySelector('.loop-count');
+            const progressBarContainer = root.querySelector('.progress-bar-container');
+            const progressBarFill = root.querySelector('.progress-bar-fill');
+            const playingInfo = root.querySelector('.playing-info');
+            const playingInfoContent = root.querySelector('.playing-info-content');
+            const togglePlayButton = root.querySelector('.toggle-play');
 
-            const loopInfo = root.querySelector('.loop-info')
-            const loopCountText = root.querySelector('.loop-count')
-            let loopCount = 0
-            let imageTimeout = null
-
-            const progressBarContainer = root.querySelector('.progress-bar-container')
-            const progressBarFill = root.querySelector('.progress-bar-fill')
-
-            const playingInfo = root.querySelector('.playing-info')
-            const playingInfoContent = root.querySelector('.playing-info-content')
-
-            const togglePlayButton = root.querySelector('.toggle-play')
-            let imageStartTime = 0
-            let imageRemainingTime = 0
-            let isImagePaused = false
-
+            let loopCount = 0;
+            let imageTimeout = null;
+            let imageStartTime = 0;
+            let imageRemainingTime = 0;
+            let isImagePaused = false;
             let videoProgressFrame = null;
 
-            // Calculates and applies the exact scale needed to fit the text
-            const adjustTextScale = () => {
-                // Reset transform temporarily so we can measure the true width
-                playingInfoContent.style.transform = 'none'
+            // Add resize handle
+            const resizeHandle = document.createElement('div');
+            resizeHandle.className = 'resize-handle';
+            root.appendChild(resizeHandle);
 
-                const containerWidth = playingInfo.clientWidth
-                const contentWidth = playingInfoContent.scrollWidth
+            const playerHeader = root.querySelector('.player-header');
+            const resetLayoutBtn = document.querySelector('.reset-layout');
 
-                if (contentWidth > containerWidth && containerWidth > 0) {
-                    const scale = containerWidth / contentWidth
-                    playingInfoContent.style.transform = `scale(${scale})`
+            // --- DRAG TO REORDER (GRID SAFE) ---
+            let isDragging = false;
+            let hasMoved = false;
+            let dragStartX = 0, dragStartY = 0;
+
+            playerHeader.addEventListener('pointerdown', (e) => {
+                if (e.target.closest('a') || e.target.closest('button')) return;
+                e.preventDefault();
+                isDragging = true;
+                hasMoved = false;
+                dragStartX = e.clientX;
+                dragStartY = e.clientY;
+                playerHeader.setPointerCapture(e.pointerId);
+            });
+
+            playerHeader.addEventListener('pointermove', (e) => {
+                if (!isDragging) return;
+
+                if (!hasMoved) {
+                    if (Math.abs(e.clientX - dragStartX) > 5 || Math.abs(e.clientY - dragStartY) > 5) {
+                        hasMoved = true;
+                        root.classList.add('is-dragging');
+                        container.style.pointerEvents = 'none'; // Stop media hijacking cursor
+                    } else return;
                 }
-            }
 
-            // Automatically triggers the scale adjustment if the layout changes size
-            const textObserver = new ResizeObserver(() => adjustTextScale())
-            textObserver.observe(playingInfo)
+                root.style.visibility = 'hidden';
+                const elementUnderCursor = document.elementFromPoint(e.clientX, e.clientY);
+                root.style.visibility = '';
+
+                if (!elementUnderCursor) return;
+                const targetRoot = elementUnderCursor.closest('.root');
+
+                if (targetRoot && targetRoot !== root) {
+                    const allRoots = Array.from(playersContainer.children);
+                    if (allRoots.indexOf(root) < allRoots.indexOf(targetRoot)) {
+                        targetRoot.after(root);
+                    } else {
+                        targetRoot.before(root);
+                    }
+                    root.dataset.manualOverride = "true";
+                    resetLayoutBtn.style.display = 'inline';
+                    updateLayout(true);
+                }
+            });
+
+            const endDrag = (e) => {
+                if (!isDragging) return;
+                isDragging = false;
+                hasMoved = false;
+                root.classList.remove('is-dragging');
+                container.style.pointerEvents = '';
+                playerHeader.releasePointerCapture(e.pointerId);
+            };
+            playerHeader.addEventListener('pointerup', endDrag);
+            playerHeader.addEventListener('pointercancel', endDrag);
+
+            // --- GRID SNAP RESIZING ---
+            let isResizing = false;
+            let resStartX, resStartY, startWidth, startHeight;
+            let resizeFrame = null;
+
+            resizeHandle.addEventListener('pointerdown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                isResizing = true;
+                resStartX = e.clientX;
+                resStartY = e.clientY;
+
+                const rect = root.getBoundingClientRect();
+                startWidth = rect.width;
+                startHeight = rect.height;
+
+                container.style.pointerEvents = 'none';
+                resizeHandle.setPointerCapture(e.pointerId);
+            });
+
+            resizeHandle.addEventListener('pointermove', (e) => {
+                if (!isResizing) return;
+                if (resizeFrame) cancelAnimationFrame(resizeFrame);
+
+                resizeFrame = requestAnimationFrame(() => {
+                    const containerRect = playersContainer.getBoundingClientRect();
+
+                    // Retrieve the actual computed grid specs
+                    const cols = parseFloat(playersContainer.dataset.cols) || 24;
+                    const computedRows = parseFloat(playersContainer.dataset.computedRows) || 12;
+
+                    const cellWidth = containerRect.width / cols;
+                    const cellHeight = containerRect.height / computedRows; // <--- The dynamic row height
+
+                    const currentWidth = startWidth + (e.clientX - resStartX);
+                    const currentHeight = startHeight + (e.clientY - resStartY);
+
+                    // Snap calculated pixels to nearest grid span
+                    const colSpan = Math.max(1, Math.min(cols, Math.round(currentWidth / cellWidth)));
+                    const rowSpan = Math.max(1, Math.round(currentHeight / cellHeight));
+
+                    root.style.gridColumnEnd = `span ${colSpan}`;
+                    root.style.gridRowEnd = `span ${rowSpan}`;
+
+                    root.dataset.manualOverride = "true";
+                    resetLayoutBtn.style.display = 'inline';
+                });
+            });
+
+            const endResize = (e) => {
+                if (!isResizing) return;
+                isResizing = false;
+                container.style.pointerEvents = '';
+                resizeHandle.releasePointerCapture(e.pointerId);
+                if (resizeFrame) cancelAnimationFrame(resizeFrame);
+                updateLayout(true);
+            };
+            resizeHandle.addEventListener('pointerup', endResize);
+            resizeHandle.addEventListener('pointercancel', endResize);
+
+            // Text scaling
+            const adjustTextScale = () => {
+                playingInfoContent.style.transform = 'none';
+                const containerWidth = playingInfo.clientWidth;
+                const contentWidth = playingInfoContent.scrollWidth;
+                if (contentWidth > containerWidth && containerWidth > 0) {
+                    const scale = containerWidth / contentWidth;
+                    playingInfoContent.style.transform = `scale(${scale})`;
+                }
+            };
+            const textObserver = new ResizeObserver(() => adjustTextScale());
+            textObserver.observe(playingInfo);
 
             if (playerCount === 1) {
-                removeButton.style.display = 'none'
-                removeDivider.style.display = 'none'
+                removeButton.style.display = 'none';
+                removeDivider.style.display = 'none';
             }
 
             const setLoading = value => {
-                loading = value
-                loadingSpinner.style.display = loading ? '' : 'none'
-            }
+                loading = value;
+                loadingSpinner.style.display = loading ? '' : 'none';
+            };
 
             const removeEventListeners = () => {
-                if (active === null) {
-                    return
-                }
-
-                active.onerror = null
-                active.onload = null
+                if (active === null) return;
+                active.onerror = null;
+                active.onload = null;
                 if (active.tagName === 'VIDEO' || active.tagName === 'AUDIO') {
-                    active.onended = null
-                    active.oncanplay = null
+                    active.onended = null;
+                    active.oncanplay = null;
                 }
-            }
+            };
 
             const updateAspectRatio = () => {
-                if (active === null) {
-                    return
-                }
-
-                let ratio = 1
+                if (active === null) return;
+                let ratio = 1;
                 if (active.tagName === 'IMG' && active.naturalHeight) {
-                    ratio = active.naturalWidth / active.naturalHeight
+                    ratio = active.naturalWidth / active.naturalHeight;
                 } else if (active.tagName === 'VIDEO' && active.videoHeight) {
-                    ratio = active.videoWidth / active.videoHeight
-                } else if (active.tagName === 'AUDIO') {
-                    ratio = 3
-                }
+                    ratio = active.videoWidth / active.videoHeight;
+                } else if (active.tagName === 'AUDIO') ratio = 3;
 
-                root.dataset.aspectRatio = ratio.toString()
-                updateLayout(true) // Animate when natural ratio changes
-            }
+                root.dataset.aspectRatio = ratio.toString();
+                updateLayout(true);
+            };
 
             const startImageTimer = (isResuming = false) => {
-                clearTimeout(imageTimeout)
+                clearTimeout(imageTimeout);
+                const isDurationEnabled = document.querySelector('.opt-img-duration-enabled').checked;
+                const duration = parseInt(document.querySelector('.opt-img-duration').value);
+                const isAutoSkip = document.querySelector('.opt-autoskip').checked;
+                const isLoop = document.querySelector('.opt-loop').checked;
 
-                const isDurationEnabled = document.querySelector('.opt-img-duration-enabled').checked
-                const duration = parseInt(document.querySelector('.opt-img-duration').value)
-                const isAutoSkip = document.querySelector('.opt-autoskip').checked
-                const isLoop = document.querySelector('.opt-loop').checked
-
-                // If timer shouldn't run, ensure button is hidden
                 if (!isDurationEnabled || isNaN(duration) || duration <= 0 || (!isAutoSkip && !isLoop)) {
-                    togglePlayButton.style.display = 'none'
-                    return
+                    togglePlayButton.style.display = 'none';
+                    return;
                 }
 
-                togglePlayButton.style.display = ''
-                togglePlayButton.innerText = 'Pause'
-                progressBarContainer.style.display = 'block'
-                isImagePaused = false
+                togglePlayButton.style.display = '';
+                togglePlayButton.innerText = 'Pause';
+                progressBarContainer.style.display = 'block';
+                isImagePaused = false;
 
                 if (!isResuming) {
-                    imageRemainingTime = duration * 1000
-                    progressBarFill.style.transition = 'none'
-                    progressBarFill.style.width = '0%'
+                    imageRemainingTime = duration * 1000;
+                    progressBarFill.style.transition = 'none';
+                    progressBarFill.style.width = '0%';
                 }
 
                 setTimeout(() => {
-                    if (isImagePaused) return // Catch edge case if paused instantly
-                    progressBarFill.style.transition = `width ${imageRemainingTime}ms linear`
-                    progressBarFill.style.width = '100%'
-                }, 50)
+                    if (isImagePaused) return;
+                    progressBarFill.style.transition = `width ${imageRemainingTime}ms linear`;
+                    progressBarFill.style.width = '100%';
+                }, 50);
 
-                imageStartTime = Date.now()
-                imageTimeout = setTimeout(() => {
-                    onEnded()
-                }, imageRemainingTime)
-            }
+                imageStartTime = Date.now();
+                imageTimeout = setTimeout(() => onEnded(), imageRemainingTime);
+            };
 
             const toggleImageTimer = () => {
-                if (active !== image || !imageTimeout) return
-
-                if (isImagePaused) {
-                    // Resume
-                    startImageTimer(true)
-                } else {
-                    // Pause
-                    clearTimeout(imageTimeout)
-                    const elapsed = Date.now() - imageStartTime
-                    imageRemainingTime -= elapsed
-                    isImagePaused = true
-                    togglePlayButton.innerText = 'Play'
-
-                    // Freeze the progress bar exactly where it is
-                    const computedWidth = parseFloat(window.getComputedStyle(progressBarFill).width)
-                    const parentWidth = parseFloat(window.getComputedStyle(progressBarContainer).width)
-                    progressBarFill.style.transition = 'none'
-                    progressBarFill.style.width = `${(computedWidth / parentWidth) * 100}%`
+                if (active !== image || !imageTimeout) return;
+                if (isImagePaused) startImageTimer(true);
+                else {
+                    clearTimeout(imageTimeout);
+                    imageRemainingTime -= (Date.now() - imageStartTime);
+                    isImagePaused = true;
+                    togglePlayButton.innerText = 'Play';
+                    const computedWidth = parseFloat(window.getComputedStyle(progressBarFill).width);
+                    const parentWidth = parseFloat(window.getComputedStyle(progressBarContainer).width);
+                    progressBarFill.style.transition = 'none';
+                    progressBarFill.style.width = `${(computedWidth / parentWidth) * 100}%`;
                 }
-            }
+            };
 
-            // Allow programmatic pausing from outside the player
             root.pauseMedia = () => {
                 if (active === image) {
-                    if (!isImagePaused && imageTimeout) toggleImageTimer()
-                } else if (active !== null) {
-                    active.pause()
-                }
-            }
+                    if (!isImagePaused && imageTimeout) toggleImageTimer();
+                } else if (active !== null) active.pause();
+            };
 
             const stop = () => {
-                if (active === null) {
-                    return
-                }
-                removeEventListeners()
-                clearTimeout(imageTimeout)
-                if (videoProgressFrame) {
-                    cancelAnimationFrame(videoProgressFrame)
-                }
-
-                // Hide progress bar on stop/switch
-                progressBarContainer.style.display = 'none'
-                progressBarFill.style.width = '0%'
-
+                if (active === null) return;
+                removeEventListeners();
+                clearTimeout(imageTimeout);
+                if (videoProgressFrame) cancelAnimationFrame(videoProgressFrame);
+                progressBarContainer.style.display = 'none';
+                progressBarFill.style.width = '0%';
                 if (active.tagName === 'VIDEO' || active.tagName === 'AUDIO') {
-                    active.pause()
-                    active.src = ''
-                    active.load()
+                    active.pause();
+                    active.src = '';
+                    active.load();
                 }
-                active.style.display = 'none'
-                active = null
-            }
+                active.style.display = 'none';
+                active = null;
+            };
 
-            const history = []
-            let historyIndex = -1
+            const history = [];
+            let historyIndex = -1;
 
             const loadFile = async (next = true) => {
-                if (!next && (history.length === 0 || historyIndex === 0)) {
-                    return
-                }
+                if (!next && (history.length === 0 || historyIndex === 0)) return;
+                if (loading) return;
+                setLoading(true);
+                removeEventListeners();
 
-                if (loading) {
-                    return
-                }
-                setLoading(true)
-
-                removeEventListeners()
-
-                let response
+                let response;
                 if (next) {
                     if (history.length === 0 || historyIndex === history.length - 1) {
-                        const query = new URLSearchParams()
-                        if (filterImage.checked) {
-                            query.append('kind', 'image')
-                        }
-                        if (filterVideo.checked) {
-                            query.append('kind', 'video')
-                        }
-                        if (filterAudio.checked) {
-                            query.append('kind', 'audio')
-                        }
+                        const query = new URLSearchParams();
+                        if (filterImage.checked) query.append('kind', 'image');
+                        if (filterVideo.checked) query.append('kind', 'video');
+                        if (filterAudio.checked) query.append('kind', 'audio');
                         response = await fetch(`random?${query}`, {signal: abortController.signal}).then(response => {
-                            setQueueCountFromResponse(response)
-                            return response.json()
-                        })
-                        Object.freeze(response)
-                        history.push(response)
-                        historyIndex++
+                            setQueueCountFromResponse(response);
+                            return response.json();
+                        });
+                        Object.freeze(response);
+                        history.push(response);
+                        historyIndex++;
                     } else {
-                        historyIndex++
-                        response = history[historyIndex]
+                        historyIndex++;
+                        response = history[historyIndex];
                     }
                 } else {
-                    historyIndex--
-                    response = history[historyIndex]
+                    historyIndex--;
+                    response = history[historyIndex];
                 }
 
-                console.log(response)
+                const path = response.path;
+                const fileKind = response.kind;
 
-                const path = response.path
-                const fileKind = response.kind
+                loopCount = 0;
+                loopCountText.innerText = loopCount.toString();
+                loopInfo.style.display = document.querySelector('.opt-loop').checked ? 'inline' : 'none';
 
-                // Reset loop tracking on new file
-                loopCount = 0
-                loopCountText.innerText = loopCount.toString()
-                loopInfo.style.display = document.querySelector('.opt-loop').checked ? 'inline' : 'none'
-
-                stop()
+                stop();
 
                 switch (fileKind) {
                     case 'image':
-                        active = image
-                        break
+                        active = image;
+                        break;
                     case 'video':
-                        active = video
-                        togglePlayButton.style.display = 'none'
-                        break
+                        active = video;
+                        togglePlayButton.style.display = 'none';
+                        break;
                     case 'audio':
-                        active = audio
-                        togglePlayButton.style.display = 'none'
-                        break
+                        active = audio;
+                        togglePlayButton.style.display = 'none';
+                        break;
                     default:
-                        console.error(`Unsupported file kind: ${fileKind}`)
-                        setLoading(false)
-                        setTimeout(nextFile, 1)
-                        return
+                        console.error(`Unsupported file kind: ${fileKind}`);
+                        setLoading(false);
+                        setTimeout(nextFile, 1);
+                        return;
                 }
 
-                playingText.innerText = path
-                adjustTextScale()
+                playingText.innerText = path;
+                adjustTextScale();
 
-                active.onerror = onError
-                active.onload = onLoad
+                active.onerror = event => {
+                    console.error('Error playing ' + playingText.innerText, event);
+                    setLoading(false);
+                    nextFile();
+                };
+                active.onload = () => {
+                    active.style.display = '';
+                    setLoading(false);
+                    updateAspectRatio();
+                    if (active === image) startImageTimer();
+                };
                 if (active.tagName === 'VIDEO' || active.tagName === 'AUDIO') {
-                    active.onended = onEnded
-                    active.oncanplay = onCanPlay
+                    active.onended = onEnded;
+                    active.oncanplay = function () {
+                        active.style.display = '';
+                        setLoading(false);
+                        updateAspectRatio();
+                        if (active === video) {
+                            progressBarContainer.style.display = 'block';
+                            progressBarFill.style.transition = 'none';
+                            progressBarFill.style.width = '0%';
+                        }
+                        if (document.querySelector('.opt-autoplay').checked) {
+                            this.play().catch(error => console.warn("Autoplay blocked:", error));
+                        }
+                    };
                 }
 
-                if (path.startsWith('/')) {
-                    active.src = `files${path}`
-                } else {
-                    active.src = `files/${path}`
-                }
+                active.src = path.startsWith('/') ? `files${path}` : `files/${path}`;
+                loading = false;
+            };
 
-                loading = false
-            }
-
-            const prevFile = () => loadFile(false)
-            const nextFile = () => loadFile(true)
-
-            function onCanPlay() {
-                active.style.display = ''
-                setLoading(false)
-                updateAspectRatio()
-
-                if (active === video) {
-                    progressBarContainer.style.display = 'block'
-                    progressBarFill.style.transition = 'none' // Snap to 0 instantly
-                    progressBarFill.style.width = '0%'
-                }
-
-                if (document.querySelector('.opt-autoplay').checked) {
-                    this.play().catch(error => console.warn("Autoplay blocked:", error))
-                }
-            }
-
-            const onError = event => {
-                console.error('Error playing ' + playingText.innerText, event)
-                setLoading(false)
-                nextFile()
-            }
-
-            const onLoad = () => {
-                active.style.display = ''
-                setLoading(false)
-                updateAspectRatio()
-                if (active === image) {
-                    startImageTimer()
-                }
-            }
+            const prevFile = () => loadFile(false);
+            const nextFile = () => loadFile(true);
 
             const onEnded = () => {
-                const isLoop = document.querySelector('.opt-loop').checked
-                const isAutoSkip = document.querySelector('.opt-autoskip').checked
-
+                const isLoop = document.querySelector('.opt-loop').checked;
+                const isAutoSkip = document.querySelector('.opt-autoskip').checked;
                 if (isLoop) {
-                    loopCount++
-                    loopCountText.innerText = loopCount.toString()
-
-                    if (active === image) {
-                        startImageTimer() // Restart the countdown
-                    } else {
-                        active.currentTime = 0
-                        active.play().catch(error => console.warn("Autoplay blocked:", error))
+                    loopCount++;
+                    loopCountText.innerText = loopCount.toString();
+                    if (active === image) startImageTimer();
+                    else {
+                        active.currentTime = 0;
+                        active.play().catch(error => console.warn("Autoplay blocked:", error));
                     }
-                } else if (isAutoSkip) {
-                    nextFile()
-                }
-            }
+                } else if (isAutoSkip) nextFile();
+            };
 
             fullscreenBtn.addEventListener('click', event => {
-                event.preventDefault()
-                if (!document.fullscreenElement) {
-                    root.requestFullscreen().catch(err => console.error(err))
-                } else {
-                    document.exitFullscreen()
-                }
-            })
+                event.preventDefault();
+                if (!document.fullscreenElement) root.requestFullscreen().catch(err => console.error(err));
+                else document.exitFullscreen();
+            });
 
             removeButton.addEventListener('click', event => {
-                event.preventDefault()
-                if (playerCount === 1) {
-                    return
-                }
-                playerCount--
-
-                localStorage.setItem('zplay_player_count', playerCount.toString())
-
-                abortController.abort('Player removed')
-                textObserver.disconnect()
-                stop()
-                root.remove()
-
-                playerCountText.innerText = playerCount.toString()
+                event.preventDefault();
+                if (playerCount === 1) return;
+                playerCount--;
+                localStorage.setItem('zplay_player_count', playerCount.toString());
+                abortController.abort('Player removed');
+                textObserver.disconnect();
+                stop();
+                root.remove();
+                playerCountText.innerText = playerCount.toString();
 
                 if (playerCount === 1) {
-                    for (const element of document.querySelectorAll('.remove')) {
-                        element.style.display = 'none'
-                    }
-                    for (const element of document.querySelectorAll('.remove-divider')) {
-                        element.style.display = 'none'
-                    }
+                    document.querySelectorAll('.remove, .remove-divider').forEach(el => el.style.display = 'none');
                 }
-
-                updateLayout(true) // Animate gracefully when a player disappears
-            })
+                updateLayout(true);
+            });
 
             for (const element of [image, video, audio]) {
-                element.style.display = 'none'
-                if (element !== image) {
-                    element.controls = true
-                }
-                container.appendChild(element)
+                element.style.display = 'none';
+                if (element !== image) element.controls = true;
+                container.appendChild(element);
             }
 
-            prevButton.addEventListener('click', event => {
-                event.preventDefault()
-                prevFile()
-            })
-            nextButton.addEventListener('click', event => {
-                event.preventDefault()
-                nextFile()
-            })
+            prevButton.addEventListener('click', e => {
+                e.preventDefault();
+                prevFile();
+            });
+            nextButton.addEventListener('click', e => {
+                e.preventDefault();
+                nextFile();
+            });
+            togglePlayButton.addEventListener('click', e => {
+                e.preventDefault();
+                toggleImageTimer();
+            });
+            image.addEventListener('click', toggleImageTimer);
+            image.style.cursor = 'pointer';
 
-            togglePlayButton.addEventListener('click', event => {
-                event.preventDefault()
-                toggleImageTimer()
-            })
-
-            // Allow clicking the image itself to pause/play
-            image.addEventListener('click', toggleImageTimer)
-            image.style.cursor = 'pointer'
-
-            // The smooth animation loop
             const updateVideoProgress = () => {
-                if (active !== video || !video.duration) {
-                    return
-                }
+                if (active !== video || !video.duration) return;
+                progressBarFill.style.transition = 'none';
+                progressBarFill.style.width = `${(video.currentTime / video.duration) * 100}%`;
+                if (!video.paused && !video.ended) videoProgressFrame = requestAnimationFrame(updateVideoProgress);
+            };
 
-                // Turn off CSS transitions because we are manually updating it 60fps
-                progressBarFill.style.transition = 'none'
-
-                const percentage = (video.currentTime / video.duration) * 100
-                progressBarFill.style.width = `${percentage}%`
-
-                // Keep looping as long as the video is playing
-                if (!video.paused && !video.ended) {
-                    videoProgressFrame = requestAnimationFrame(updateVideoProgress)
-                }
-            }
-
-            // Start the loop when the video plays
             video.addEventListener('play', () => {
-                progressBarContainer.style.display = 'block'
-                if (videoProgressFrame) {
-                    cancelAnimationFrame(videoProgressFrame)
-                }
-                videoProgressFrame = requestAnimationFrame(updateVideoProgress)
-            })
-
-            // Pause the loop when the video pauses
+                progressBarContainer.style.display = 'block';
+                if (videoProgressFrame) cancelAnimationFrame(videoProgressFrame);
+                videoProgressFrame = requestAnimationFrame(updateVideoProgress);
+            });
             video.addEventListener('pause', () => {
-                if (videoProgressFrame) {
-                    cancelAnimationFrame(videoProgressFrame)
-                }
-            })
-
-            // Update the bar immediately if the user scrubs/seeks while paused
+                if (videoProgressFrame) cancelAnimationFrame(videoProgressFrame);
+            });
             video.addEventListener('seeked', () => {
                 if (active === video && video.paused && video.duration) {
-                    const percentage = (video.currentTime / video.duration) * 100
-                    progressBarFill.style.width = `${percentage}%`
+                    progressBarFill.style.width = `${(video.currentTime / video.duration) * 100}%`;
                 }
-            })
+            });
 
-            playersContainer.appendChild(root)
-
-            nextFile()
-
-            playerCountText.innerText = playerCount.toString()
+            playersContainer.appendChild(root);
+            nextFile();
+            playerCountText.innerText = playerCount.toString();
 
             if (playerCount > 1) {
-                for (const element of document.querySelectorAll('.remove')) {
-                    element.style.display = ''
-                }
-                for (const element of document.querySelectorAll('.remove-divider')) {
-                    element.style.display = 'inline'
-                }
+                document.querySelectorAll('.remove').forEach(el => el.style.display = '');
+                document.querySelectorAll('.remove-divider').forEach(el => el.style.display = 'inline');
             }
 
-            updateLayout(true) // Animate new elements flowing in
+            updateLayout(true);
         }
 
         function setQueueCountFromResponse(response) {
-            const queueCount = response.headers.get('x-queue-count')
-            // const queueSize = response.headers.get('x-queue-size')
-            const videoCount = response.headers.get('x-queue-video-count')
-            const imageCount = response.headers.get('x-queue-image-count')
-            const audioCount = response.headers.get('x-queue-audio-count')
-
-            queueCountText.innerText = `${queueCount} - ${videoCount} videos, ${imageCount} images, ${audioCount} audio`
+            const queueCount = response.headers.get('x-queue-count');
+            const videoCount = response.headers.get('x-queue-video-count');
+            const imageCount = response.headers.get('x-queue-image-count');
+            const audioCount = response.headers.get('x-queue-audio-count');
+            queueCountText.innerText = `${queueCount} - ${videoCount} videos, ${imageCount} images, ${audioCount} audio`;
         }
 
         async function getQueueInfo() {
-            const response = await fetch('queue')
-            setQueueCountFromResponse(response)
+            const response = await fetch('queue');
+            setQueueCountFromResponse(response);
         }
 
-        let queueInfoTimeout = null
+        let queueInfoTimeout = null;
 
         function getQueueInfoPoll(timeout = 1) {
-            if (queueInfoTimeout !== null) {
-                return
-            }
-
+            if (queueInfoTimeout !== null) return;
             queueInfoTimeout = setTimeout(() => {
-                getQueueInfo()
-                    .catch(error => console.warn("Error getting queue info:", error))
-                    .then(() => {
-                        queueInfoTimeout = null
-                        getQueueInfoPoll(500)
-                    })
-            }, timeout)
-
-
+                getQueueInfo().catch(e => console.warn(e)).then(() => {
+                    queueInfoTimeout = null;
+                    getQueueInfoPoll(500);
+                });
+            }, timeout);
         }
 
+        // --- THE NEW CSS GRID LAYOUT ENGINE ---
         function updateLayout(animate = true) {
             const shouldAnimate = animate === true;
+            const mode = layoutMode.value;
+            layoutCount.disabled = mode === 'fluid';
+            let count = parseInt(layoutCount.value) || 1;
+            const domPlayers = Array.from(document.querySelectorAll('.root'));
+            const N = domPlayers.length;
+            count = Math.min(count, N) || 1;
 
-            const mode = layoutMode.value
-            layoutCount.disabled = mode === 'fluid'
+            if (N === 0) return;
 
-            let count = parseInt(layoutCount.value) || 1
-
-            const domPlayers = Array.from(document.querySelectorAll('.root'))
-            const N = domPlayers.length
-
-            count = Math.min(count, N) || 1
-
-            if (N === 0) return
-
-            // --- 1. RECORD FIRST POSITIONS (For FLIP Animation) ---
+            // 1. Record FLIP Initial state
             let firstRects;
             if (shouldAnimate) {
                 firstRects = new Map();
                 domPlayers.forEach(p => firstRects.set(p, p.getBoundingClientRect()));
             }
 
-            // --- 2. APPLY LAYOUT MATH ---
-            if (mode === 'fluid') {
-                const rect = playersContainer.getBoundingClientRect();
-                const W = rect.width || window.innerWidth;
-                const H = rect.height || window.innerHeight;
+            // 2. Setup Container Constraints
+            playersContainer.style.display = 'grid';
 
-                const players = [...domPlayers].sort((a, b) =>
-                    (parseFloat(b.dataset.aspectRatio) || 1) - (parseFloat(a.dataset.aspectRatio) || 1)
-                );
+            if (mode === 'horizontal') {
+                // Columns Mode
+                playersContainer.style.gridTemplateColumns = `repeat(${count}, 1fr)`;
+                playersContainer.style.gridAutoRows = `calc(100% / ${Math.ceil(N / count)})`;
+                playersContainer.style.gridAutoFlow = 'row dense';
 
-                let bestMinArea = -1;
-                let bestTotalArea = -1;
-                let bestPartition = null;
-                let bestRowHeights = [];
-                let bestTotalHeight = 0;
+                playersContainer.dataset.cols = count;
+                playersContainer.dataset.rowHeight = playersContainer.clientHeight / Math.ceil(N / count);
 
-                const evaluate = (partition) => {
-                    let totalH = 0;
-                    let rHeights = [];
-                    for (let row of partition) {
-                        let sumR = row.reduce((s, p) => s + (parseFloat(p.dataset.aspectRatio) || 1), 0);
-                        let rH = W / sumR;
-                        rHeights.push(rH);
-                        totalH += rH;
-                    }
+                domPlayers.forEach(p => {
+                    if (p.dataset.manualOverride === "true") return;
+                    p.style.gridColumnEnd = 'span 1';
+                    p.style.gridRowEnd = 'span 1';
+                });
 
-                    const mediaScale = Math.min(1, H / totalH);
+            } else if (mode === 'vertical') {
+                // Rows Mode
+                const rowCount = count;
+                const dynamicCols = Math.ceil(N / rowCount);
+                playersContainer.style.gridTemplateColumns = `repeat(${dynamicCols}, 1fr)`;
+                playersContainer.style.gridAutoRows = `calc(100% / ${rowCount})`;
+                playersContainer.style.gridAutoFlow = 'column dense'; // Fill column by column
 
-                    let minArea = Infinity;
-                    let totalArea = 0;
+                playersContainer.dataset.cols = dynamicCols;
+                playersContainer.dataset.rowHeight = playersContainer.clientHeight / rowCount;
 
-                    for (let i = 0; i < partition.length; i++) {
-                        let scaledH = rHeights[i] * mediaScale;
-                        for (let p of partition[i]) {
-                            let r = parseFloat(p.dataset.aspectRatio) || 1;
-                            let area = (scaledH * r) * scaledH;
-                            if (area < minArea) minArea = area;
-                            totalArea += area;
+                domPlayers.forEach(p => {
+                    if (p.dataset.manualOverride === "true") return;
+                    p.style.gridColumnEnd = 'span 1';
+                    p.style.gridRowEnd = 'span 1';
+                });
+
+            } else if (mode === 'fluid') {
+                const MAX_COLS = 24;
+                playersContainer.style.gridTemplateColumns = `repeat(${MAX_COLS}, 1fr)`;
+
+                // Pass 1: Use a tiny temporary row height so the browser can calculate the "Tetris" wrapping
+                playersContainer.style.gridTemplateRows = '';
+                playersContainer.style.gridAutoRows = '10px';
+                playersContainer.style.gridAutoFlow = 'row dense';
+
+                const cellWidth = playersContainer.clientWidth / MAX_COLS;
+
+                let baseCols = 8;
+                if (N <= 2) baseCols = 24;
+                else if (N <= 4) baseCols = 12;
+                else if (N > 8) baseCols = 6;
+
+                domPlayers.forEach(p => {
+                    if (p.dataset.manualOverride === "true") return;
+
+                    const ratio = parseFloat(p.dataset.aspectRatio) || 1;
+                    let cSpan = baseCols;
+
+                    // Calculate the exact number of 10px rows needed to match the media's aspect ratio
+                    const targetHeight = (cSpan * cellWidth) / ratio;
+                    let rSpan = Math.max(2, Math.round(targetHeight / 12)); // 10px height + 2px gap
+
+                    p.style.gridColumnEnd = `span ${cSpan}`;
+                    p.style.gridRowEnd = `span ${rSpan}`;
+                });
+
+                // Force browser to render the initial layout
+                void playersContainer.offsetWidth;
+
+                // --- Space Sweeper ---
+                const rows = new Map();
+                domPlayers.forEach(p => {
+                    const top = Math.round(p.offsetTop);
+                    if (!rows.has(top)) rows.set(top, []);
+                    rows.get(top).push(p);
+                });
+
+                rows.forEach(rowItems => {
+                    let consumedCols = 0;
+                    let fluidItems = [];
+
+                    rowItems.forEach(p => {
+                        const spanMatches = p.style.gridColumnEnd.match(/\d+/);
+                        const span = spanMatches ? parseInt(spanMatches[0]) : 1;
+                        consumedCols += span;
+                        if (p.dataset.manualOverride !== "true") fluidItems.push({ el: p, span: span });
+                    });
+
+                    let leftoverCols = MAX_COLS - consumedCols;
+                    if (leftoverCols > 0 && fluidItems.length > 0) {
+                        let index = 0;
+                        while (leftoverCols > 0) {
+                            fluidItems[index].span += 1;
+                            leftoverCols -= 1;
+                            index = (index + 1) % fluidItems.length;
                         }
+                        fluidItems.forEach(item => item.el.style.gridColumnEnd = `span ${item.span}`);
                     }
+                });
 
-                    const EPSILON = 0.1;
-                    if (minArea - bestMinArea > EPSILON || (Math.abs(minArea - bestMinArea) <= EPSILON && totalArea > bestTotalArea)) {
-                        bestMinArea = minArea;
-                        bestTotalArea = totalArea;
-                        bestPartition = partition;
-                        bestRowHeights = rHeights;
-                        bestTotalHeight = totalH;
-                    }
-                };
+                // Force browser to render the swept width
+                void playersContainer.offsetWidth;
 
-                if (N <= 12) {
-                    const getPartitions = (arr) => {
-                        if (arr.length === 0) return [[]];
-                        let res = [];
-                        for (let i = 1; i <= arr.length; i++) {
-                            let first = arr.slice(0, i);
-                            let rests = getPartitions(arr.slice(i));
-                            for (let r of rests) {
-                                res.push([first, ...r]);
-                            }
-                        }
-                        return res;
-                    };
-                    const allParts = getPartitions(players);
-                    for (let part of allParts) {
-                        evaluate(part);
-                    }
-                } else {
-                    for (let c = 1; c <= N; c++) {
-                        let part = [];
-                        for (let i = 0; i < N; i += c) {
-                            part.push(players.slice(i, i + c));
-                        }
-                        evaluate(part);
-                    }
-                }
+                // --- Pass 2: FIT TO SCREEN HEIGHT ---
+                // Count exactly how many row tracks the grid generated
+                const computedRowsStyle = window.getComputedStyle(playersContainer).gridTemplateRows;
+                const computedRows = computedRowsStyle.split(' ').length;
 
-                const scale = Math.min(1, H / bestTotalHeight);
+                // Save these dimensions for the resize tool
+                playersContainer.dataset.cols = MAX_COLS;
+                playersContainer.dataset.computedRows = computedRows;
 
-                playersContainer.style.flexDirection = 'row';
-                playersContainer.style.alignContent = 'flex-start';
-                playersContainer.style.justifyContent = 'center';
-
-                let orderCounter = 0;
-                for (let i = 0; i < bestPartition.length; i++) {
-                    const row = bestPartition[i];
-                    const actualRowH = bestRowHeights[i] * scale;
-                    const heightPct = (actualRowH / H) * 100;
-
-                    for (let j = 0; j < row.length; j++) {
-                        const player = row[j];
-                        const ratio = parseFloat(player.dataset.aspectRatio) || 1;
-
-                        // Calculate width using the unscaled row height.
-                        // This guarantees the row items will always sum to exactly 100% width,
-                        // preventing the next row from wrapping up onto the same line.
-                        const widthPct = ((bestRowHeights[i] * ratio) / W) * 100;
-
-                        player.style.flex = `0 0 calc(${widthPct}% - 0.01px)`;
-                        player.style.height = `${heightPct}%`;
-                        player.style.width = '';
-                        player.style.order = orderCounter++;
-                    }
-                }
-            } else {
-                playersContainer.style.alignContent = 'stretch';
-                playersContainer.style.justifyContent = 'flex-start';
-                playersContainer.style.flexDirection = mode === 'horizontal' ? 'row' : 'column'
-
-                const crossCount = Math.ceil(N / count) || 1
-
-                for (let i = 0; i < N; i += count) {
-                    const chunk = domPlayers.slice(i, i + count)
-
-                    if (mode === 'horizontal') {
-                        const totalRatio = chunk.reduce((sum, p) => sum + (parseFloat(p.dataset.aspectRatio) || 1), 0)
-
-                        for (const player of chunk) {
-                            const ratio = parseFloat(player.dataset.aspectRatio) || 1
-                            const pct = (ratio / totalRatio) * 100
-
-                            player.style.flex = `0 0 calc(${pct}% - 0.01px)`
-                            player.style.width = ''
-                            player.style.height = `calc(100% / ${crossCount})`
-                            player.style.order = ''
-                        }
-                    } else {
-                        const totalInvRatio = chunk.reduce((sum, p) => sum + (1 / (parseFloat(p.dataset.aspectRatio) || 1)), 0)
-
-                        for (const player of chunk) {
-                            const invRatio = 1 / (parseFloat(player.dataset.aspectRatio) || 1)
-                            const pct = (invRatio / totalInvRatio) * 100
-
-                            player.style.flex = `0 0 calc(${pct}% - 0.01px)`
-                            player.style.height = ''
-                            player.style.width = `calc(100% / ${crossCount})`
-                            player.style.order = ''
-                        }
-                    }
-                }
+                // Force the grid tracks to become fractions (1fr), shrinking/growing to perfectly fit the screen height!
+                playersContainer.style.gridTemplateRows = `repeat(${computedRows}, minmax(0, 1fr))`;
+                playersContainer.style.gridAutoRows = '0px';
             }
 
-            // --- 3. ANIMATE TO NEW POSITIONS ---
+            // 3. FLIP Animate to new Grid Positions
             if (shouldAnimate) {
+                // Force a layout recalculation
+                void playersContainer.offsetWidth;
+
                 domPlayers.forEach(p => {
                     const first = firstRects.get(p);
                     const last = p.getBoundingClientRect();
@@ -1002,11 +968,13 @@
                     const deltaW = first.width / (last.width || 1);
                     const deltaH = first.height / (last.height || 1);
 
-                    // Only animate if the element actually moved or changed size
                     if (deltaX !== 0 || deltaY !== 0 || deltaW !== 1 || deltaH !== 1) {
                         p.animate([
-                            { transformOrigin: 'top left', transform: `translate(${deltaX}px, ${deltaY}px) scale(${deltaW}, ${deltaH})` },
-                            { transformOrigin: 'top left', transform: 'none' }
+                            {
+                                transformOrigin: 'top left',
+                                transform: `translate(${deltaX}px, ${deltaY}px) scale(${deltaW}, ${deltaH})`
+                            },
+                            {transformOrigin: 'top left', transform: 'none'}
                         ], {
                             duration: 350,
                             easing: 'cubic-bezier(0.25, 0.8, 0.25, 1)'
@@ -1016,184 +984,154 @@
             }
         }
 
-        const patchRootsBody = []
-        let patchRootsTimeout = null
+        const patchRootsBody = [];
+        let patchRootsTimeout = null;
 
         const rootCheckboxChanged = checkbox => {
-            if (!checkbox.id.startsWith('root-')) {
-                return
-            }
-
-            const root = checkbox.id.substring(5)
-            patchRootsBody.push({path: root, enabled: checkbox.checked})
+            if (!checkbox.id.startsWith('root-')) return;
+            const root = checkbox.id.substring(5);
+            patchRootsBody.push({path: root, enabled: checkbox.checked});
 
             if (patchRootsTimeout === null) {
                 patchRootsTimeout = setTimeout(() => {
-                    patchRootsTimeout = null
+                    patchRootsTimeout = null;
                     fetch('roots', {
                         method: 'PATCH',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
+                        headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify(patchRootsBody.splice(0))
                     })
                         .then(response => setQueueCountFromResponse(response))
-                        .catch(error => console.error('Error updating roots:', error))
-                }, 100)
+                        .catch(error => console.error('Error updating roots:', error));
+                }, 100);
             }
         }
 
         document.addEventListener('DOMContentLoaded', () => {
-            settingsManager.load()
+            settingsManager.load();
             document.getElementById('options-modal').addEventListener('change', event => {
-                const target = event.originalTarget || event.target
+                const target = event.originalTarget || event.target;
                 if (target.type === 'checkbox' && target.id.startsWith('root-')) {
-                    rootCheckboxChanged(target)
-                    return
+                    rootCheckboxChanged(target);
+                    return;
                 }
-                settingsManager.save()
-            })
+                settingsManager.save();
+            });
 
-            queueCountText = document.querySelector('.queue-count')
-            resetQueueButton = document.querySelector('.reset-queue')
-            shuffleQueueButton = document.querySelector('.shuffle-queue')
-            filterImage = document.querySelector('.filter-image')
-            filterVideo = document.querySelector('.filter-video')
-            filterAudio = document.querySelector('.filter-audio')
+            queueCountText = document.querySelector('.queue-count');
+            resetQueueButton = document.querySelector('.reset-queue');
+            shuffleQueueButton = document.querySelector('.shuffle-queue');
+            filterImage = document.querySelector('.filter-image');
+            filterVideo = document.querySelector('.filter-video');
+            filterAudio = document.querySelector('.filter-audio');
+            playersContainer = document.querySelector('.players-container');
+            playerCountText = document.querySelector('.player-count');
+            addPlayerButton = document.querySelector('.add-player');
+            layoutMode = document.querySelector('.layout-mode');
+            layoutCount = document.querySelector('.layout-count');
 
-            playersContainer = document.querySelector('.players-container')
+            resetQueueButton.addEventListener('click', e => {
+                e.preventDefault();
+                fetch('reset').then(getQueueInfo);
+            });
+            shuffleQueueButton.addEventListener('click', e => {
+                e.preventDefault();
+                fetch('shuffle').then(getQueueInfo);
+            });
+            addPlayerButton.addEventListener('click', e => {
+                e.preventDefault();
+                addPlayer();
+            });
 
-            playerCountText = document.querySelector('.player-count')
-            addPlayerButton = document.querySelector('.add-player')
-
-            layoutMode = document.querySelector('.layout-mode')
-            layoutCount = document.querySelector('.layout-count')
-
-            resetQueueButton.addEventListener('click', event => {
-                event.preventDefault()
-                fetch('reset').then(getQueueInfo)
-            })
-
-            shuffleQueueButton.addEventListener('click', event => {
-                event.preventDefault()
-                fetch('shuffle').then(getQueueInfo)
-            })
-
-            addPlayerButton.addEventListener('click', event => {
-                event.preventDefault()
-                addPlayer()
-            })
-
-            // Only trigger the animation on purposeful layout changes, NOT while continuously dragging the window size
             layoutMode.addEventListener('change', () => updateLayout(true));
             layoutCount.addEventListener('input', () => updateLayout(true));
             window.addEventListener('resize', () => updateLayout(false));
 
-            const storagePlayerCount = Number(localStorage.getItem('zplay_player_count') || 0) || 1
-            for (let i = 0; i < storagePlayerCount; i++) {
-                addPlayer(false)
-            }
-            getQueueInfoPoll()
+            const storagePlayerCount = Number(localStorage.getItem('zplay_player_count') || 0) || 1;
+            for (let i = 0; i < storagePlayerCount; i++) addPlayer(false);
+            getQueueInfoPoll();
 
-            // Fullscreen all trigger
-            document.querySelector('.fullscreen-all-btn').addEventListener('click', event => {
-                event.preventDefault()
-                if (!document.fullscreenElement) {
-                    document.documentElement.requestFullscreen().catch(err => console.error(err))
-                } else {
-                    document.exitFullscreen()
-                }
-            })
+            document.querySelector('.fullscreen-all-btn').addEventListener('click', e => {
+                e.preventDefault();
+                if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(err => console.error(err));
+                else document.exitFullscreen();
+            });
 
-            // Pause other players when one goes fullscreen
             document.addEventListener('fullscreenchange', () => {
-                const fsElement = document.fullscreenElement
+                const fsElement = document.fullscreenElement;
                 if (fsElement && fsElement.classList.contains('root')) {
                     document.querySelectorAll('.root').forEach(r => {
-                        if (r !== fsElement && typeof r.pauseMedia === 'function') {
-                            r.pauseMedia()
-                        }
-                    })
+                        if (r !== fsElement && typeof r.pauseMedia === 'function') r.pauseMedia();
+                    });
                 }
-            })
+            });
 
-            // Modal Logic
-            const modal = document.getElementById('options-modal')
+            const modal = document.getElementById('options-modal');
             document.querySelector('.options-btn').addEventListener('click', async () => {
                 try {
                     const roots = await fetch('roots').then(response => {
-                        setQueueCountFromResponse(response)
-                        return response.json()
-                    })
-
-                    const root = document.querySelector('.root-controls')
-                    root.innerHTML = ''
-
-                    const elements = []
+                        setQueueCountFromResponse(response);
+                        return response.json();
+                    });
+                    const root = document.querySelector('.root-controls');
+                    root.innerHTML = '';
+                    const elements = [];
                     for (const {path, enabled} of roots) {
-                        const div = document.createElement('div')
-                        div.innerHTML = `<label><input id="root-${path}" type="checkbox" ${enabled ? 'checked' : ''}> ${path}</label>`
-                        const element = div.firstElementChild
-                        element.onchange = rootCheckboxChanged.bind(null, element)
-                        elements.push(element)
+                        const div = document.createElement('div');
+                        div.innerHTML = `<label><input id="root-${path}" type="checkbox" ${enabled ? 'checked' : ''}> ${path}</label>`;
+                        const element = div.firstElementChild;
+                        element.onchange = rootCheckboxChanged.bind(null, element);
+                        elements.push(element);
                     }
-                    elements.sort((a, b) => a.innerText.localeCompare(b.innerText))
-                    for (const element of elements) {
-                        root.appendChild(element)
-                    }
+                    elements.sort((a, b) => a.innerText.localeCompare(b.innerText));
+                    for (const element of elements) root.appendChild(element);
                 } catch (error) {
-                    console.error('Error fetching roots:', error)
+                    console.error('Error fetching roots:', error);
                 }
-                modal.showModal()
-            })
-            document.querySelector('.close-modal').addEventListener('click', () => modal.close())
+                modal.showModal();
+            });
+            document.querySelector('.close-modal').addEventListener('click', () => modal.close());
 
-            // Playback Mutually Exclusive Checkboxes & Loop Display
-            const autoSkipCheck = document.querySelector('.opt-autoskip')
-            const loopCheck = document.querySelector('.opt-loop')
+            const autoSkipCheck = document.querySelector('.opt-autoskip');
+            const loopCheck = document.querySelector('.opt-loop');
+            autoSkipCheck.addEventListener('change', e => {
+                if (e.target.checked) loopCheck.checked = false;
+            });
+            loopCheck.addEventListener('change', e => {
+                if (e.target.checked) autoSkipCheck.checked = false;
+                document.querySelectorAll('.loop-info').forEach(el => el.style.display = e.target.checked ? 'inline' : 'none');
+            });
 
-            autoSkipCheck.addEventListener('change', event => {
-                if (event.target.checked) {
-                    loopCheck.checked = false
-                }
-            })
+            const imgDurationCheck = document.querySelector('.opt-img-duration-enabled');
+            const imgDurationInput = document.querySelector('.opt-img-duration');
+            imgDurationCheck.addEventListener('change', e => imgDurationInput.disabled = !e.target.checked);
 
-            loopCheck.addEventListener('change', event => {
-                if (event.target.checked) {
-                    autoSkipCheck.checked = false
-                }
+            document.querySelector('.select-all-roots').addEventListener('click', e => {
+                e.preventDefault();
+                document.querySelectorAll('.root-controls input[type="checkbox"]').forEach(el => {
+                    el.checked = true;
+                    rootCheckboxChanged(el);
+                });
+            });
+            document.querySelector('.deselect-all-roots').addEventListener('click', e => {
+                e.preventDefault();
+                document.querySelectorAll('.root-controls input[type="checkbox"]').forEach(el => {
+                    el.checked = false;
+                    rootCheckboxChanged(el);
+                });
+            });
 
-                // Show/hide loop counts on active players instantly when toggled
-                for (const element of document.querySelectorAll('.loop-info')) {
-                    element.style.display = event.target.checked ? 'inline' : 'none'
-                }
-            })
-
-            const imgDurationCheck = document.querySelector('.opt-img-duration-enabled')
-            const imgDurationInput = document.querySelector('.opt-img-duration')
-
-            imgDurationCheck.addEventListener('change', event => {
-                imgDurationInput.disabled = !event.target.checked
-            })
-
-            const selectAllRoots = document.querySelector('.select-all-roots')
-            const deselectAllRoots = document.querySelector('.deselect-all-roots')
-
-            selectAllRoots.addEventListener('click', event => {
-                event.preventDefault()
-                for (const element of document.querySelectorAll('.root-controls input[type="checkbox"]')) {
-                    element.checked = true
-                    rootCheckboxChanged(element)
-                }
-            })
-            deselectAllRoots.addEventListener('click', event => {
-                event.preventDefault()
-                for (const element of document.querySelectorAll('.root-controls input[type="checkbox"]')) {
-                    element.checked = false
-                    rootCheckboxChanged(element)
-                }
-            })
-        })
+            const resetLayoutBtn = document.querySelector('.reset-layout');
+            resetLayoutBtn.addEventListener('click', (event) => {
+                event.preventDefault();
+                document.querySelectorAll('.root').forEach(root => {
+                    root.dataset.manualOverride = "false";
+                    root.style.gridColumnEnd = '';
+                    root.style.gridRowEnd = '';
+                });
+                resetLayoutBtn.style.display = 'none';
+                updateLayout(true);
+            });
+        });
     </script>
 </head>
 <body>
@@ -1204,7 +1142,10 @@
         <button class="options-btn" style="width: auto; height: auto; padding: 5px 15px;">Options</button>
         <button class="fullscreen-all-btn" style="width: auto; height: auto; padding: 5px 15px;">Fullscreen All</button>
     </div>
-    <h3>Players (<span class="player-count"></span>) <a class="add-player" href="#">Add Player</a></h3>
+    <h3>Players (<span class="player-count"></span>)
+        <a class="add-player" href="#">Add Player</a> |
+        <a class="reset-layout" href="#" style="display: none;">Reset Layout</a>
+    </h3>
 </div>
 
 <dialog id="options-modal">
