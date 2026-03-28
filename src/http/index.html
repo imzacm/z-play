@@ -823,7 +823,7 @@
         function updateLayout(animate = true) {
             const shouldAnimate = animate === true;
             const mode = layoutMode.value;
-            layoutCount.disabled = mode === 'fluid';
+            // layoutCount.disabled = mode === 'fluid';
             let count = parseInt(layoutCount.value) || 1;
             const domPlayers = Array.from(document.querySelectorAll('.root'));
             const N = domPlayers.length;
@@ -874,14 +874,14 @@
                 });
 
             } else if (mode === 'fluid') {
-                const CELL_SIZE = 10; // The 10px micro-grid for high-fidelity aspect ratios
+                const CELL_SIZE = 10;
 
                 playersContainer.style.gridTemplateColumns = `repeat(auto-fill, ${CELL_SIZE}px)`;
                 playersContainer.style.gridTemplateRows = '';
                 playersContainer.style.gridAutoRows = `${CELL_SIZE}px`;
                 playersContainer.style.gridAutoFlow = 'row dense';
                 playersContainer.style.justifyContent = 'center';
-                playersContainer.style.alignContent = 'center'; // Centers the final cluster beautifully
+                playersContainer.style.alignContent = 'center';
 
                 const containerW = playersContainer.clientWidth || window.innerWidth;
                 const containerH = playersContainer.clientHeight || window.innerHeight;
@@ -892,7 +892,11 @@
                 let maxS = Math.max(containerW, containerH);
                 let bestS = minS;
 
-                // 8 iterations is the perfect balance: it takes <5ms and finds the exact pixel boundary
+                // NEW: Use your UI 'Count' input to force wrapping.
+                // If Count is 2, no auto-sized item can be wider than 50% of the screen.
+                const targetCols = count > 0 ? count : 2;
+                const maxSpansAllowed = Math.floor(maxCols / targetCols) - 1;
+
                 for (let i = 0; i < 8; i++) {
                     let midS = (minS + maxS) / 2;
 
@@ -900,30 +904,32 @@
                         if (p.dataset.manualOverride === "true") return;
 
                         const ratio = parseFloat(p.dataset.aspectRatio) || 1;
-
-                        // Scale the size while perfectly locking the aspect ratio!
                         let w = midS * Math.sqrt(ratio);
-                        let h = midS / Math.sqrt(ratio);
 
-                        let cSpan = Math.max(15, Math.round(w / CELL_SIZE));
-                        let rSpan = Math.max(15, Math.round(h / CELL_SIZE));
+                        let cSpan = Math.round(w / CELL_SIZE);
 
-                        cSpan = Math.min(cSpan, maxCols);
+                        // Force the grid to wrap by capping the width!
+                        if (cSpan > maxSpansAllowed && N > 1) {
+                            cSpan = maxSpansAllowed;
+                        }
+
+                        // Lock height to the final width span to guarantee perfect aspect ratios
+                        let rSpan = Math.round(cSpan / ratio);
+
+                        cSpan = Math.max(15, cSpan);
+                        rSpan = Math.max(15, rSpan);
 
                         p.style.gridColumnEnd = `span ${cSpan}`;
                         p.style.gridRowEnd = `span ${rSpan}`;
                     });
 
-                    // Force the browser to calculate the physical layout
                     void playersContainer.offsetWidth;
 
-                    // Check if the current size causes a vertical overflow
-                    // (Adding a 5px buffer to prevent edge-case scrollbars)
                     if (playersContainer.scrollHeight <= containerH + 5) {
-                        bestS = midS; // This size fits! Save it.
-                        minS = midS;  // Let's try to make them even bigger!
+                        bestS = midS;
+                        minS = midS;
                     } else {
-                        maxS = midS;  // Too big, went off screen. Scale back down.
+                        maxS = midS;
                     }
                 }
 
@@ -933,11 +939,15 @@
 
                     const ratio = parseFloat(p.dataset.aspectRatio) || 1;
                     let w = bestS * Math.sqrt(ratio);
-                    let h = bestS / Math.sqrt(ratio);
 
-                    let cSpan = Math.max(15, Math.round(w / CELL_SIZE));
-                    let rSpan = Math.max(15, Math.round(h / CELL_SIZE));
-                    cSpan = Math.min(cSpan, maxCols);
+                    let cSpan = Math.round(w / CELL_SIZE);
+                    if (cSpan > maxSpansAllowed && N > 1) {
+                        cSpan = maxSpansAllowed;
+                    }
+                    let rSpan = Math.round(cSpan / ratio);
+
+                    cSpan = Math.max(15, cSpan);
+                    rSpan = Math.max(15, rSpan);
 
                     p.style.gridColumnEnd = `span ${cSpan}`;
                     p.style.gridRowEnd = `span ${rSpan}`;
