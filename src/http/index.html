@@ -45,7 +45,6 @@
         }
 
         button {
-            height: 10%;
             width: 100%;
             flex-shrink: 0;
             cursor: pointer;
@@ -54,12 +53,12 @@
         .nav {
             display: flex;
             flex-shrink: 0;
-            height: 5%;
+            height: auto;
         }
 
         .nav button {
             width: auto;
-            height: 100%;
+            height: 30px;
             flex: 1 1 0;
             font-size: 0.75rem;
             padding: 2px;
@@ -170,6 +169,7 @@
             border-bottom: 1px solid #333;
             cursor: grab;
             touch-action: none;
+            flex-shrink: 0;
         }
 
         .player-header:active {
@@ -454,21 +454,21 @@
                 if (resizeFrame) cancelAnimationFrame(resizeFrame);
 
                 resizeFrame = requestAnimationFrame(() => {
+                    const CELL_SIZE = 10; // Must match the micro-grid size
+                    const ratio = parseFloat(root.dataset.aspectRatio) || 1;
+
+                    // 1. Calculate the new width based on where the mouse is dragged
+                    let currentWidth = startWidth + (e.clientX - resStartX);
+
+                    // 2. ASPECT LOCK: Force the height to exactly match the video's true ratio!
+                    let currentHeight = currentWidth / ratio;
+
                     const containerRect = playersContainer.getBoundingClientRect();
+                    const maxCols = Math.floor(containerRect.width / CELL_SIZE);
 
-                    // Retrieve the actual computed grid specs
-                    const cols = parseFloat(playersContainer.dataset.cols) || 24;
-                    const computedRows = parseFloat(playersContainer.dataset.computedRows) || 12;
-
-                    const cellWidth = containerRect.width / cols;
-                    const cellHeight = containerRect.height / computedRows; // <--- The dynamic row height
-
-                    const currentWidth = startWidth + (e.clientX - resStartX);
-                    const currentHeight = startHeight + (e.clientY - resStartY);
-
-                    // Snap calculated pixels to nearest grid span
-                    const colSpan = Math.max(1, Math.min(cols, Math.round(currentWidth / cellWidth)));
-                    const rowSpan = Math.max(1, Math.round(currentHeight / cellHeight));
+                    // 3. Convert to spans and cap the width so it doesn't break the screen
+                    const colSpan = Math.max(15, Math.min(maxCols, Math.round(currentWidth / CELL_SIZE)));
+                    const rowSpan = Math.max(15, Math.round(currentHeight / CELL_SIZE));
 
                     root.style.gridColumnEnd = `span ${colSpan}`;
                     root.style.gridRowEnd = `span ${rowSpan}`;
@@ -874,84 +874,74 @@
                 });
 
             } else if (mode === 'fluid') {
-                const MAX_COLS = 24;
-                playersContainer.style.gridTemplateColumns = `repeat(${MAX_COLS}, 1fr)`;
+                const CELL_SIZE = 10; // The 10px micro-grid for high-fidelity aspect ratios
 
-                // Pass 1: Use a tiny temporary row height so the browser can calculate the "Tetris" wrapping
+                playersContainer.style.gridTemplateColumns = `repeat(auto-fill, ${CELL_SIZE}px)`;
                 playersContainer.style.gridTemplateRows = '';
-                playersContainer.style.gridAutoRows = '10px';
+                playersContainer.style.gridAutoRows = `${CELL_SIZE}px`;
                 playersContainer.style.gridAutoFlow = 'row dense';
+                playersContainer.style.justifyContent = 'center';
+                playersContainer.style.alignContent = 'center'; // Centers the final cluster beautifully
 
-                const cellWidth = playersContainer.clientWidth / MAX_COLS;
+                const containerW = playersContainer.clientWidth || window.innerWidth;
+                const containerH = playersContainer.clientHeight || window.innerHeight;
+                const maxCols = Math.floor(containerW / CELL_SIZE);
 
-                let baseCols = 8;
-                if (N <= 2) baseCols = 24;
-                else if (N <= 4) baseCols = 12;
-                else if (N > 8) baseCols = 6;
+                // --- Binary Search for the Perfect Scale ---
+                let minS = 10;
+                let maxS = Math.max(containerW, containerH);
+                let bestS = minS;
 
+                // 8 iterations is the perfect balance: it takes <5ms and finds the exact pixel boundary
+                for (let i = 0; i < 8; i++) {
+                    let midS = (minS + maxS) / 2;
+
+                    domPlayers.forEach(p => {
+                        if (p.dataset.manualOverride === "true") return;
+
+                        const ratio = parseFloat(p.dataset.aspectRatio) || 1;
+
+                        // Scale the size while perfectly locking the aspect ratio!
+                        let w = midS * Math.sqrt(ratio);
+                        let h = midS / Math.sqrt(ratio);
+
+                        let cSpan = Math.max(15, Math.round(w / CELL_SIZE));
+                        let rSpan = Math.max(15, Math.round(h / CELL_SIZE));
+
+                        cSpan = Math.min(cSpan, maxCols);
+
+                        p.style.gridColumnEnd = `span ${cSpan}`;
+                        p.style.gridRowEnd = `span ${rSpan}`;
+                    });
+
+                    // Force the browser to calculate the physical layout
+                    void playersContainer.offsetWidth;
+
+                    // Check if the current size causes a vertical overflow
+                    // (Adding a 5px buffer to prevent edge-case scrollbars)
+                    if (playersContainer.scrollHeight <= containerH + 5) {
+                        bestS = midS; // This size fits! Save it.
+                        minS = midS;  // Let's try to make them even bigger!
+                    } else {
+                        maxS = midS;  // Too big, went off screen. Scale back down.
+                    }
+                }
+
+                // Apply the absolute optimal size we found
                 domPlayers.forEach(p => {
                     if (p.dataset.manualOverride === "true") return;
 
                     const ratio = parseFloat(p.dataset.aspectRatio) || 1;
-                    let cSpan = baseCols;
+                    let w = bestS * Math.sqrt(ratio);
+                    let h = bestS / Math.sqrt(ratio);
 
-                    // Calculate the exact number of 10px rows needed to match the media's aspect ratio
-                    const targetHeight = (cSpan * cellWidth) / ratio;
-                    let rSpan = Math.max(2, Math.round(targetHeight / 12)); // 10px height + 2px gap
+                    let cSpan = Math.max(15, Math.round(w / CELL_SIZE));
+                    let rSpan = Math.max(15, Math.round(h / CELL_SIZE));
+                    cSpan = Math.min(cSpan, maxCols);
 
                     p.style.gridColumnEnd = `span ${cSpan}`;
                     p.style.gridRowEnd = `span ${rSpan}`;
                 });
-
-                // Force browser to render the initial layout
-                void playersContainer.offsetWidth;
-
-                // --- Space Sweeper ---
-                const rows = new Map();
-                domPlayers.forEach(p => {
-                    const top = Math.round(p.offsetTop);
-                    if (!rows.has(top)) rows.set(top, []);
-                    rows.get(top).push(p);
-                });
-
-                rows.forEach(rowItems => {
-                    let consumedCols = 0;
-                    let fluidItems = [];
-
-                    rowItems.forEach(p => {
-                        const spanMatches = p.style.gridColumnEnd.match(/\d+/);
-                        const span = spanMatches ? parseInt(spanMatches[0]) : 1;
-                        consumedCols += span;
-                        if (p.dataset.manualOverride !== "true") fluidItems.push({ el: p, span: span });
-                    });
-
-                    let leftoverCols = MAX_COLS - consumedCols;
-                    if (leftoverCols > 0 && fluidItems.length > 0) {
-                        let index = 0;
-                        while (leftoverCols > 0) {
-                            fluidItems[index].span += 1;
-                            leftoverCols -= 1;
-                            index = (index + 1) % fluidItems.length;
-                        }
-                        fluidItems.forEach(item => item.el.style.gridColumnEnd = `span ${item.span}`);
-                    }
-                });
-
-                // Force browser to render the swept width
-                void playersContainer.offsetWidth;
-
-                // --- Pass 2: FIT TO SCREEN HEIGHT ---
-                // Count exactly how many row tracks the grid generated
-                const computedRowsStyle = window.getComputedStyle(playersContainer).gridTemplateRows;
-                const computedRows = computedRowsStyle.split(' ').length;
-
-                // Save these dimensions for the resize tool
-                playersContainer.dataset.cols = MAX_COLS;
-                playersContainer.dataset.computedRows = computedRows;
-
-                // Force the grid tracks to become fractions (1fr), shrinking/growing to perfectly fit the screen height!
-                playersContainer.style.gridTemplateRows = `repeat(${computedRows}, minmax(0, 1fr))`;
-                playersContainer.style.gridAutoRows = '0px';
             }
 
             // 3. FLIP Animate to new Grid Positions
