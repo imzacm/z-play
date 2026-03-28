@@ -16,6 +16,7 @@
         }
 
         .root {
+            position: relative;
             display: flex;
             flex-direction: column;
             border: 1px solid #333;
@@ -268,6 +269,54 @@
         .root:fullscreen .resize-handle {
             display: none;
         }
+
+        /* --- Edit Mode Styles --- */
+        .resize-handle {
+            display: none; /* Hidden by default */
+            /* ... keep your existing resize-handle properties ... */
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            width: 30px;
+            height: 30px;
+            cursor: nwse-resize;
+            z-index: 20;
+            touch-action: none;
+            background: linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, 0.5) 50%);
+        }
+
+        /* Show handle and highlight border when editing */
+        .root.is-editing .resize-handle {
+            display: block;
+        }
+
+        .root.is-editing {
+            border-color: #3498db;
+            box-shadow: 0 0 10px rgba(52, 152, 219, 0.3);
+            z-index: 50;
+        }
+
+        /* The dedicated drag button */
+        .drag-handle {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 10px;
+            cursor: grab;
+            font-size: 1.2rem;
+            color: #888;
+            touch-action: none; /* Critical: Prevents mobile scroll so long-press works */
+            user-select: none;
+            flex-shrink: 0;
+        }
+
+        .drag-handle:active {
+            cursor: grabbing;
+        }
+
+        .root.is-editing .drag-handle {
+            color: #3498db; /* Lights up when unlocked */
+        }
     </style>
 
     <script>
@@ -323,6 +372,7 @@
             root.dataset.aspectRatio = "1";
             root.innerHTML = `
 <div class="player-header">
+    <div class="drag-handle" title="Long press to unlock and move">⠿</div>
     <h2 class="playing-info">
         <div class="playing-info-content">
             Playing <span class="playing-text"></span>
@@ -372,62 +422,110 @@
             const playerHeader = root.querySelector('.player-header');
             const resetLayoutBtn = document.querySelector('.reset-layout');
 
-            // --- DRAG TO REORDER (GRID SAFE) ---
+            // --- EDIT MODE TIMERS & DRAG LOGIC ---
+            const dragHandle = root.querySelector('.drag-handle');
+            let editTimeout = null;
+
+            root.exitEditMode = () => {
+                root.classList.remove('is-editing');
+                clearTimeout(editTimeout);
+            };
+
+            const toggleEditMode = () => {
+                if (root.classList.contains('is-editing')) {
+                    root.exitEditMode();
+                } else {
+                    // Instantly lock any other players that might be open
+                    document.querySelectorAll('.root.is-editing').forEach(el => {
+                        if (el !== root && typeof el.exitEditMode === 'function') el.exitEditMode();
+                    });
+                    root.classList.add('is-editing');
+                    resetEditTimer();
+                }
+            };
+
+            const resetEditTimer = () => {
+                if (!root.classList.contains('is-editing')) return;
+                clearTimeout(editTimeout);
+                editTimeout = setTimeout(() => root.exitEditMode(), 5000);
+            };
+
+            // Keep Edit Mode alive only if they interact with the header or resize corner
+            playerHeader.addEventListener('pointermove', resetEditTimer);
+            playerHeader.addEventListener('pointerdown', resetEditTimer);
+            resizeHandle.addEventListener('pointermove', resetEditTimer);
+            resizeHandle.addEventListener('pointerdown', resetEditTimer);
+
+            // --- DRAG TO REORDER ---
             let isDragging = false;
             let hasMoved = false;
             let dragStartX = 0, dragStartY = 0;
 
-            playerHeader.addEventListener('pointerdown', (e) => {
-                if (e.target.closest('a') || e.target.closest('button')) return;
+            dragHandle.addEventListener('pointerdown', (e) => {
                 e.preventDefault();
+
                 isDragging = true;
                 hasMoved = false;
                 dragStartX = e.clientX;
                 dragStartY = e.clientY;
-                playerHeader.setPointerCapture(e.pointerId);
+
+                // Toggles edit mode on or off instantly
+                toggleEditMode();
+
+                dragHandle.setPointerCapture(e.pointerId);
             });
 
-            playerHeader.addEventListener('pointermove', (e) => {
+            dragHandle.addEventListener('pointermove', (e) => {
                 if (!isDragging) return;
 
-                if (!hasMoved) {
-                    if (Math.abs(e.clientX - dragStartX) > 5 || Math.abs(e.clientY - dragStartY) > 5) {
-                        hasMoved = true;
-                        root.classList.add('is-dragging');
-                        container.style.pointerEvents = 'none'; // Stop media hijacking cursor
-                    } else return;
+                // 5px threshold prevents accidental dragging when you just want to click/toggle
+                if (!hasMoved && (Math.abs(e.clientX - dragStartX) > 5 || Math.abs(e.clientY - dragStartY) > 5)) {
+                    hasMoved = true;
+                    // If they start dragging but it was closed, force it open
+                    if (!root.classList.contains('is-editing')) toggleEditMode();
                 }
 
-                root.style.visibility = 'hidden';
-                const elementUnderCursor = document.elementFromPoint(e.clientX, e.clientY);
-                root.style.visibility = '';
+                if (hasMoved && root.classList.contains('is-editing')) {
+                    root.classList.add('is-dragging');
+                    container.style.pointerEvents = 'none';
 
-                if (!elementUnderCursor) return;
-                const targetRoot = elementUnderCursor.closest('.root');
+                    root.style.visibility = 'hidden';
+                    const elementUnderCursor = document.elementFromPoint(e.clientX, e.clientY);
+                    root.style.visibility = '';
 
-                if (targetRoot && targetRoot !== root) {
-                    const allRoots = Array.from(playersContainer.children);
-                    if (allRoots.indexOf(root) < allRoots.indexOf(targetRoot)) {
-                        targetRoot.after(root);
-                    } else {
-                        targetRoot.before(root);
+                    if (!elementUnderCursor) return;
+                    const targetRoot = elementUnderCursor.closest('.root');
+
+                    if (targetRoot && targetRoot !== root) {
+                        const allRoots = Array.from(playersContainer.children);
+                        if (allRoots.indexOf(root) < allRoots.indexOf(targetRoot)) {
+                            targetRoot.after(root);
+                        } else {
+                            targetRoot.before(root);
+                        }
+                        root.dataset.manualOverride = "true";
+                        resetLayoutBtn.style.display = 'inline';
+                        updateLayout(true);
                     }
-                    root.dataset.manualOverride = "true";
-                    resetLayoutBtn.style.display = 'inline';
-                    updateLayout(true);
                 }
             });
 
             const endDrag = (e) => {
                 if (!isDragging) return;
                 isDragging = false;
-                hasMoved = false;
                 root.classList.remove('is-dragging');
                 container.style.pointerEvents = '';
-                playerHeader.releasePointerCapture(e.pointerId);
+
+                // Safely release capture only if we still have it
+                if (dragHandle.hasPointerCapture(e.pointerId)) {
+                    dragHandle.releasePointerCapture(e.pointerId);
+                }
             };
-            playerHeader.addEventListener('pointerup', endDrag);
-            playerHeader.addEventListener('pointercancel', endDrag);
+
+            document.addEventListener('pointerup', endDrag);
+
+            // dragHandle.addEventListener('pointerup', endDrag);
+            // dragHandle.addEventListener('pointercancel', endDrag);
 
             // --- GRID SNAP RESIZING ---
             let isResizing = false;
@@ -482,7 +580,12 @@
                 if (!isResizing) return;
                 isResizing = false;
                 container.style.pointerEvents = '';
-                resizeHandle.releasePointerCapture(e.pointerId);
+
+                // Safely release capture only if we still have it
+                if (resizeHandle.hasPointerCapture(e.pointerId)) {
+                    resizeHandle.releasePointerCapture(e.pointerId);
+                }
+
                 if (resizeFrame) cancelAnimationFrame(resizeFrame);
                 updateLayout(true);
             };
@@ -730,6 +833,7 @@
                 localStorage.setItem('zplay_player_count', playerCount.toString());
                 abortController.abort('Player removed');
                 textObserver.disconnect();
+                document.removeEventListener('pointerup', endDrag);
                 stop();
                 root.remove();
                 playerCountText.innerText = playerCount.toString();
@@ -1131,6 +1235,24 @@
                 resetLayoutBtn.style.display = 'none';
                 updateLayout(true);
             });
+
+            // Global listener: If you click outside an editing player, lock it immediately
+            document.addEventListener('pointerdown', (e) => {
+                document.querySelectorAll('.root.is-editing').forEach(editingRoot => {
+                    const header = editingRoot.querySelector('.player-header');
+                    const resizer = editingRoot.querySelector('.resize-handle');
+
+                    // If the click is ON the header or the resize corner, let it stay open
+                    if ((header && header.contains(e.target)) || (resizer && resizer.contains(e.target))) {
+                        return;
+                    }
+
+                    // If the click is ANYWHERE else (the video itself, the background, another player), close it
+                    if (typeof editingRoot.exitEditMode === 'function') {
+                        editingRoot.exitEditMode();
+                    }
+                });
+            }, true); // The 'true' uses the Capture Phase, forcing it to run before native video controls swallow the click.
         });
     </script>
 </head>
