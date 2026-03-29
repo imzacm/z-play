@@ -12,6 +12,7 @@ pub mod random_files;
 pub mod random_files_immich;
 #[cfg(feature = "app")]
 pub mod ui;
+pub mod walkdir;
 
 #[cfg(feature = "app")]
 pub use app::Error;

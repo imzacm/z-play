@@ -214,26 +214,13 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
 
     let queue = QUEUE.get().unwrap();
 
-    let mut counter = 0;
-    let (path, file_kind) = loop {
-        if counter > (Queue::QUEUE_SIZE * 3) {
-            panic!("Queue does not contain files matching filter");
-        }
-        counter += 1;
-
+    let (path, file_kind) = {
         let filter_kinds = if kinds.is_empty() { None } else { Some(&kinds) };
         let filter_roots = if roots.is_empty() { None } else { Some(&roots) };
         let (path, file_kind) = queue.find_pop_async(filter_kinds, filter_roots).await;
 
-        let future = precache_file(&path);
-        match tokio::time::timeout(Duration::from_millis(100), future).await {
-            Ok(Ok(())) => break (path, file_kind),
-            Ok(Err(_)) => (),
-            Err(_) => {
-                println!("Pre-caching file {} timed out", path.display());
-                tokio::spawn(queue.push_async(path));
-            }
-        }
+        tokio::task::spawn(precache_file(path.clone()));
+        (path, file_kind)
     };
 
     let path_str = path.to_str().expect("Only UTF-8 paths are supported");
@@ -365,10 +352,8 @@ fn queue_feeder(queue: &Queue, max_count: Option<usize>) {
                 roots.shuffle(&mut rng);
             }
 
-            let busy_timeout = Duration::from_millis(timeout_ms as u64);
-            let scan_timeout = busy_timeout * 2;
-
-            let path = random_files::random_file_with_timeout(&roots, scan_timeout, busy_timeout);
+            let timeout = Duration::from_millis(timeout_ms as u64);
+            let path = random_files::random_file_with_timeout(&roots, timeout);
 
             match path {
                 Some(path) => break path,
@@ -388,8 +373,13 @@ fn queue_feeder(queue: &Queue, max_count: Option<usize>) {
     }
 }
 
-async fn precache_file(path: &Path) -> Result<(), std::io::Error> {
+async fn precache_file<P>(path: P) -> Result<(), std::io::Error>
+where
+    P: AsRef<Path>,
+{
     use tokio::io::AsyncReadExt;
+
+    let path = path.as_ref();
 
     println!("Pre-caching file: {}", path.display());
 

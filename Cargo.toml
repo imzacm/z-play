@@ -25,7 +25,6 @@ env_logger = "0.11"
 thiserror = "2.0"
 rand = { version = "0.10", features = ["simd_support"] }
 rayon = "1.11"
-jwalk = "0.8"
 rustc-hash = "2.1"
 
 parking_lot = { version = "0.12", features = ["nightly", "hardware-lock-elision"] }
@@ -53,6 +52,8 @@ reqwest = { version = "0.13", optional = true, features = ["json"] }
 camino = { version = "1", optional = true }
 
 z-sync = { git = "https://github.com/imzacm/z-sync.git", rev = "a32daba7e5eecd47e78917f2adea2534f41118f7" }
+
+rustix = { version = "1", features = ["fs"] }
 
 [dependencies.z-queue]
 git = "https://github.com/imzacm/z-queue.git"
