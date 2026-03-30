@@ -2,11 +2,15 @@ mod queue;
 mod serve_dir;
 
 use std::borrow::Cow;
+use std::cell::{LazyCell, RefCell};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::OnceLock;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::extract::Request;
@@ -18,10 +22,11 @@ use axum::response::{Html, IntoResponse, Json, Response, Sse};
 use axum::routing::{get, patch};
 use axum::{Router, middleware};
 use axum_extra::extract::Query;
+use camino::{Utf8Path, Utf8PathBuf};
 use compio::BufResult;
 use compio::buf::IoBuf;
 use futures_util::Stream;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxBuildHasher, FxHashSet};
 use serde::{Deserialize, Serialize};
 use z_play::random_files;
 #[cfg(feature = "immich")]
@@ -90,6 +95,67 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
     println!("Listening on http://{address}");
     let listener = compio::net::TcpListener::bind(address).await.unwrap();
     cyper_axum::serve(listener, app).await.unwrap();
+}
+
+async fn open_file<'p, P>(path: P) -> Result<Rc<compio::fs::File>, std::io::Error>
+where
+    P: Into<Cow<'p, Utf8Path>>,
+{
+    struct Entry {
+        file: Rc<compio::fs::File>,
+        expires_at: std::time::Instant,
+    }
+
+    type FileCache = lru::LruCache<Utf8PathBuf, Entry, FxBuildHasher>;
+
+    const CAP: NonZeroUsize = NonZeroUsize::new(200).unwrap();
+    const EXPIRY: Duration = Duration::from_secs(60);
+
+    #[thread_local]
+    static CACHE: LazyCell<RefCell<FileCache>> = LazyCell::new(|| {
+        compio::runtime::spawn(async {
+            loop {
+                compio::time::sleep(Duration::from_secs(10)).await;
+
+                let mut cache = CACHE.borrow_mut();
+                let now = std::time::Instant::now();
+                while let Some((_, entry)) = cache.peek_lru()
+                    && entry.expires_at < now
+                {
+                    cache.pop_lru();
+                    cache = CACHE.borrow_mut();
+                }
+            }
+        })
+        .detach();
+
+        RefCell::new(lru::LruCache::with_hasher(CAP, FxBuildHasher))
+    });
+
+    let path = path.into();
+    let now = std::time::Instant::now();
+
+    {
+        let mut cache = CACHE.borrow_mut();
+        if let Some(entry) = cache.get_mut(path.as_ref()) {
+            entry.expires_at = now + EXPIRY;
+            return Ok(entry.file.clone());
+        }
+    }
+
+    let file = compio::fs::File::open(path.as_ref()).await?;
+
+    let mut cache = CACHE.borrow_mut();
+    if let Some(entry) = cache.get_mut(path.as_ref()) {
+        entry.expires_at = now + EXPIRY;
+        return Ok(entry.file.clone());
+    }
+
+    let entry = Entry { file: Rc::new(file), expires_at: std::time::Instant::now() + EXPIRY };
+    let file = entry.file.clone();
+    cache.put(path.into_owned(), entry);
+
+    Ok(file)
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -214,16 +280,17 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
 
     let queue = QUEUE.get().unwrap();
 
-    let (path, file_kind) = {
+    let (path, file_kind) = loop {
         let filter_kinds = if kinds.is_empty() { None } else { Some(&kinds) };
         let filter_roots = if roots.is_empty() { None } else { Some(&roots) };
         let (path, file_kind) = queue.find_pop_async(filter_kinds, filter_roots).await;
 
-        compio::runtime::spawn(precache_file(path.clone())).detach();
-        (path, file_kind)
-    };
+        let path = Utf8PathBuf::from_path_buf(path).expect("Only UTF-8 paths are supported");
 
-    let path_str = path.to_str().expect("Only UTF-8 paths are supported");
+        let path_clone = path.clone();
+        compio::runtime::spawn(precache_file(path_clone)).detach();
+        break (path, file_kind);
+    };
 
     (
         [
@@ -232,7 +299,7 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
             (EXPIRES, "0"),
         ],
         queue_info(),
-        Json(PathResponse { path: path_str.into(), kind: file_kind }),
+        Json(PathResponse { path: path.into_string(), kind: file_kind }),
     )
 }
 
@@ -309,8 +376,8 @@ async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
             }
 
             let json = QueueStatsJson {
-                queue_count: Queue::QUEUE_SIZE,
-                queue_size: len,
+                queue_count: len,
+                queue_size: Queue::QUEUE_SIZE,
                 video_count: stats.video_count,
                 image_count: stats.image_count,
                 audio_count: stats.audio_count,
@@ -440,24 +507,24 @@ fn queue_feeder(queue: &Queue, max_count: Option<usize>) {
     }
 }
 
-async fn precache_file<P>(path: P) -> Result<(), std::io::Error>
+async fn precache_file<'p, P>(path: P) -> Result<(), std::io::Error>
 where
-    P: AsRef<Path>,
+    P: Into<Cow<'p, Utf8Path>>,
 {
     use compio::io::AsyncReadExt;
 
-    let path = path.as_ref();
+    let path = path.into();
 
-    println!("Pre-caching file: {}", path.display());
+    println!("Pre-caching file: {path}");
 
-    let file = compio::fs::File::open(path).await?;
+    let file = open_file(path.as_ref()).await?;
     let file = std::io::Cursor::new(file);
 
     let mut take = file.take(PRECACHE_READ_BYTES);
     match compio::io::copy(&mut take, &mut WriteSink).await {
-        Ok(n) => println!("Pre-cached {n} bytes from file {}", path.display()),
+        Ok(n) => println!("Pre-cached {n} bytes from file {path}"),
         Err(error) => {
-            println!("Failed to read file {}: {error}", path.display());
+            println!("Failed to read file {path}: {error}");
             return Err(error);
         }
     }
@@ -478,4 +545,27 @@ impl compio::io::AsyncWrite for WriteSink {
     async fn shutdown(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+pub async fn yield_now() {
+    struct YieldNow {
+        yielded: bool,
+    }
+
+    impl Future for YieldNow {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if self.yielded {
+                Poll::Ready(())
+            } else {
+                self.yielded = true;
+                // Wake the task immediately so the executor re-schedules it
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+
+    YieldNow { yielded: false }.await;
 }

@@ -3,10 +3,12 @@ use std::num::NonZeroUsize;
 use axum::body::{Body, Bytes};
 use axum::extract::Path;
 use axum::response::{IntoResponse, Response};
+use camino::Utf8Path;
 use compio::BufResult;
-use compio::fs::File;
 use compio::io::AsyncReadAt;
 use http::{StatusCode, header};
+
+use super::open_file;
 
 #[axum::debug_handler]
 pub async fn serve_dir(
@@ -14,11 +16,18 @@ pub async fn serve_dir(
     request: axum::extract::Request,
 ) -> impl IntoResponse {
     let (result_tx, result_rx) = z_queue::defaults::bounded(NonZeroUsize::MIN);
-    let path = std::path::Path::new("/").join(path);
+    let path = Utf8Path::new("/").join(path);
 
     let path_clone = path.clone();
     compio::runtime::spawn(async move {
-        let result = compio::fs::metadata(&path_clone).await;
+        let file = match open_file(path_clone).await {
+            Ok(file) => file,
+            Err(error) => {
+                _ = result_tx.send_async(Err(error)).await;
+                return;
+            }
+        };
+        let result = file.metadata().await;
         _ = result_tx.send_async(result).await;
     })
     .detach();
@@ -62,7 +71,7 @@ pub async fn serve_dir(
     let (tx, rx) = z_queue::defaults::bounded(NonZeroUsize::MIN);
 
     compio::runtime::spawn(async move {
-        let file = File::open(&path).await.expect("Failed to open file");
+        let file = open_file(path).await.expect("Failed to open file");
 
         let mut current_offset = start;
         let buffer_size = 64 * 1024; // Stream in 64KB chunks

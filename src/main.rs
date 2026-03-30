@@ -1,4 +1,5 @@
 #![deny(unused_imports, clippy::all)]
+#![cfg_attr(feature = "http", feature(thread_local))]
 
 #[cfg(feature = "http")]
 mod http;
