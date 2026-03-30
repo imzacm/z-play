@@ -899,28 +899,25 @@
         }
 
         function setQueueCountFromResponse(response) {
-            const queueCount = response.headers.get('x-queue-count');
-            const videoCount = response.headers.get('x-queue-video-count');
-            const imageCount = response.headers.get('x-queue-image-count');
-            const audioCount = response.headers.get('x-queue-audio-count');
-            queueCountText.innerText = `${queueCount} - ${videoCount} videos, ${imageCount} images, ${audioCount} audio`;
+            const queueCount = response.headers.get('x-queue-count')
+            const videoCount = response.headers.get('x-queue-video-count')
+            const imageCount = response.headers.get('x-queue-image-count')
+            const audioCount = response.headers.get('x-queue-audio-count')
+            queueCountText.innerText = `${queueCount} - ${videoCount} videos, ${imageCount} images, ${audioCount} audio`
+        }
+
+        function setQueueCountFromJson(json) {
+            const queueCount = json.queue_count
+            const videoCount = json.video_count
+            const imageCount = json.image_count
+            const audioCount = json.audio_count
+
+            queueCountText.innerText = `${queueCount} - ${videoCount} videos, ${imageCount} images, ${audioCount} audio`
         }
 
         async function getQueueInfo() {
-            const response = await fetch('queue');
-            setQueueCountFromResponse(response);
-        }
-
-        let queueInfoTimeout = null;
-
-        function getQueueInfoPoll(timeout = 1) {
-            if (queueInfoTimeout !== null) return;
-            queueInfoTimeout = setTimeout(() => {
-                getQueueInfo().catch(e => console.warn(e)).then(() => {
-                    queueInfoTimeout = null;
-                    getQueueInfoPoll(500);
-                });
-            }, timeout);
+            const response = await fetch('queue')
+            setQueueCountFromResponse(response)
         }
 
         // --- THE NEW CSS GRID LAYOUT ENGINE ---
@@ -1152,7 +1149,6 @@
 
             const storagePlayerCount = Number(localStorage.getItem('zplay_player_count') || 0) || 1;
             for (let i = 0; i < storagePlayerCount; i++) addPlayer(false);
-            getQueueInfoPoll();
 
             document.querySelector('.fullscreen-all-btn').addEventListener('click', e => {
                 e.preventDefault();
@@ -1253,7 +1249,13 @@
                     }
                 });
             }, true); // The 'true' uses the Capture Phase, forcing it to run before native video controls swallow the click.
-        });
+
+            const eventSource = new EventSource('sse')
+            eventSource.addEventListener('queue_info', event => {
+                const json = JSON.parse(event.data)
+                setQueueCountFromJson(json)
+            })
+        })
     </script>
 </head>
 <body>

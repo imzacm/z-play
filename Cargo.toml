@@ -13,8 +13,8 @@ debug = 0
 [features]
 default = ["app", "http"]
 app = ["dep:glib", "dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:eframe", "dep:rfd", "dep:keepawake"]
-http = ["dep:tokio", "dep:tower", "dep:tower-http", "dep:axum", "dep:axum-extra", "dep:urlencoding", "dep:serde"]
-immich = ["dep:serde", "dep:reqwest", "dep:camino", "parking_lot/send_guard"]
+http = ["dep:compio", "dep:cyper-axum", "dep:tower", "dep:axum", "dep:axum-extra", "dep:urlencoding", "dep:serde", "dep:serde_json", "dep:mime_guess"]
+immich = ["dep:serde", "dep:cyper", "dep:http", "dep:camino", "parking_lot/send_guard"]
 
 [dependencies]
 dotenv = { version = "0.15", optional = true }
@@ -39,23 +39,30 @@ rfd = { version = "0.17", optional = true }
 keepawake = { version = "0.6", optional = true }
 
 # HTTP Server
-tokio = { version = "1", optional = true, default-features = false, features = ["rt", "rt-multi-thread", "parking_lot", "net"] }
+compio = { version = "0.18", optional = true, features = ["fs"] }
+cyper-axum = { version = "0.8", optional = true, features = ["http2"] }
+
 tower = { version = "0.5", optional = true }
-tower-http = { version = "0.6", optional = true, features = ["fs", "compression-full", "set-header"] }
-axum = { version = "0.8", optional = true }
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "http2", "json", "macros"] }
 axum-extra = { version = "0.12", optional = true, features = ["query"] }
 urlencoding = { version = "2.1", optional = true }
 serde = { version = "1", optional = true, features = ["derive"] }
+serde_json = { version = "1", optional = true }
+mime_guess = { version = "2", optional = true }
 
 # Immich
-reqwest = { version = "0.13", optional = true, features = ["json"] }
+cyper = { version = "0.8", optional = true, features = ["json"] }
+http = { version = "1", optional = true }
 camino = { version = "1", optional = true }
 
-z-sync = { git = "https://github.com/imzacm/z-sync.git", rev = "a32daba7e5eecd47e78917f2adea2534f41118f7" }
+z-sync = { git = "https://github.com/imzacm/z-sync.git", rev = "1e441255526f6bcc3cecd2d97a2ffb246a795859" }
 
 rustix = { version = "1", features = ["fs"] }
 
+futures-util = "0.3"
+tokio = { version = "1", default-features = false, features = ["sync"] }
+
 [dependencies.z-queue]
 git = "https://github.com/imzacm/z-queue.git"
-rev = "4b1c4a812da05555b967adda2631421b231b1ed0"
-features = ["map", "triomphe", "rand", "crossbeam-queue"]
+rev = "524d3466e2f7461486576640e72b9a86807eb6ad"
+features = ["map", "triomphe", "rand", "crossbeam-queue", "stream"]

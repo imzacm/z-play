@@ -1,24 +1,28 @@
 mod queue;
+mod serve_dir;
 
 use std::borrow::Cow;
+use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use axum::extract::Request;
 use axum::http::header::{CACHE_CONTROL, EXPIRES, PRAGMA};
-use axum::http::{HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderName, StatusCode};
 use axum::middleware::Next;
-use axum::response::{Html, IntoResponse, Json, Response};
+use axum::response::sse::Event;
+use axum::response::{Html, IntoResponse, Json, Response, Sse};
 use axum::routing::{get, patch};
 use axum::{Router, middleware};
 use axum_extra::extract::Query;
+use compio::BufResult;
+use compio::buf::IoBuf;
+use futures_util::Stream;
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
-use tower::ServiceBuilder;
-use tower_http::services::ServeDir;
-use tower_http::set_header::SetResponseHeaderLayer;
 use z_play::random_files;
 #[cfg(feature = "immich")]
 use z_play::random_files_immich::{self, ImmichClient};
@@ -40,13 +44,9 @@ const PRECACHE_READ_BYTES: u64 = 8 * 1024 * 1024;
 static QUEUE: OnceLock<Queue> = OnceLock::new();
 
 pub fn start_server(port: u16, roots: Vec<PathBuf>) {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            start_server_inner(port, roots).await;
-        });
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        start_server_inner(port, roots).await;
+    });
 }
 
 async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
@@ -58,16 +58,12 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
         .route("/queue", get(queue_info_handler))
         .route("/reset", get(reset_queue_handler))
         .route("/shuffle", get(shuffle_queue_handler))
-        .nest_service(
+        .route("/sse", get(sse_handler))
+        .nest(
             "/files",
-            ServiceBuilder::new()
-                // .layer(CompressionLayer::new())
-                .layer(SetResponseHeaderLayer::if_not_present(
-                    CACHE_CONTROL,
-                    HeaderValue::from_static("public, max-age=31536000"),
-                ))
-                .layer(middleware::from_fn(validate_path_middleware))
-                .service(ServeDir::new("/")),
+            Router::new()
+                .route("/{*path}", get(serve_dir::serve_dir))
+                .route_layer(middleware::from_fn(validate_path_middleware)),
         );
 
     roots.retain_mut(|root| match root.canonicalize() {
@@ -86,14 +82,14 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
     let queue = QUEUE.get_or_init(move || Queue::new(roots));
 
     #[cfg(feature = "immich")]
-    tokio::spawn(immich_queue_feeder(queue));
+    compio::runtime::spawn(immich_queue_feeder(queue)).detach();
 
     std::thread::spawn(move || queue_feeder(queue, None));
 
     let address = SocketAddr::from(([0, 0, 0, 0], port));
     println!("Listening on http://{address}");
-    let listener = tokio::net::TcpListener::bind(address).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = compio::net::TcpListener::bind(address).await.unwrap();
+    cyper_axum::serve(listener, app).await.unwrap();
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -162,8 +158,10 @@ struct RootJson {
 async fn get_roots() -> impl IntoResponse {
     let queue = QUEUE.get().unwrap();
 
-    let (enabled_roots, disabled_roots) =
-        tokio::join!(queue.enabled_roots().read_async(), queue.disabled_roots().read_async());
+    let (enabled_roots, disabled_roots) = futures_util::join!(
+        queue.enabled_roots().read_async(),
+        queue.disabled_roots().read_async()
+    );
 
     let roots = enabled_roots
         .iter()
@@ -178,8 +176,10 @@ async fn get_roots() -> impl IntoResponse {
 async fn patch_roots(body: Json<Vec<RootJson>>) -> impl IntoResponse {
     let queue = QUEUE.get().unwrap();
 
-    let (mut enabled_roots, mut disabled_roots) =
-        tokio::join!(queue.enabled_roots().write_async(), queue.disabled_roots().write_async());
+    let (mut enabled_roots, mut disabled_roots) = futures_util::join!(
+        queue.enabled_roots().write_async(),
+        queue.disabled_roots().write_async()
+    );
 
     for RootJson { path, enabled } in body.0 {
         let path = Path::new(&path);
@@ -219,7 +219,7 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
         let filter_roots = if roots.is_empty() { None } else { Some(&roots) };
         let (path, file_kind) = queue.find_pop_async(filter_kinds, filter_roots).await;
 
-        tokio::task::spawn(precache_file(path.clone()));
+        compio::runtime::spawn(precache_file(path.clone())).detach();
         (path, file_kind)
     };
 
@@ -280,6 +280,73 @@ async fn validate_path_middleware(request: Request, next: Next) -> Result<Respon
     if is_valid { Ok(next.run(request).await) } else { Err(StatusCode::NOT_FOUND) }
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct QueueStatsJson {
+    queue_count: usize,
+    queue_size: usize,
+    video_count: usize,
+    image_count: usize,
+    audio_count: usize,
+}
+
+async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let (tx, rx) = z_queue::defaults::bounded(NonZeroUsize::MIN);
+
+    let tx_clone = tx.clone();
+    compio::runtime::spawn(async move {
+        let tx = tx_clone;
+        let queue = QUEUE.get().unwrap();
+
+        let mut prev_len = 0;
+        let mut prev_stats = queue::QueueStats::default();
+
+        loop {
+            let stats = queue.stats();
+            let len = queue.len();
+            if stats == prev_stats && len == prev_len {
+                compio::time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+
+            let json = QueueStatsJson {
+                queue_count: Queue::QUEUE_SIZE,
+                queue_size: len,
+                video_count: stats.video_count,
+                image_count: stats.image_count,
+                audio_count: stats.audio_count,
+            };
+
+            prev_stats = stats;
+            prev_len = len;
+
+            let json = serde_json::to_string(&json).unwrap();
+            let event = Event::default().event("queue_info").data(json);
+            if tx.send_async(Ok(event)).await.is_err() {
+                break;
+            }
+
+            compio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .detach();
+
+    compio::runtime::spawn(async move {
+        let mut interval = compio::time::interval(Duration::from_secs(15));
+        loop {
+            interval.tick().await;
+            // The browser ignores this, but it keeps the TCP socket warm.
+            let event = Event::default().comment("keep-alive");
+            if tx.send_async(Ok(event)).await.is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
+
+    let stream = rx.into_stream();
+    Sse::new(stream)
+}
+
 #[cfg(feature = "immich")]
 async fn immich_queue_feeder(queue: &Queue) {
     let immich = {
@@ -301,7 +368,7 @@ async fn immich_queue_feeder(queue: &Queue) {
             let mut roots = queue.enabled_roots().read_async().await.clone();
             if roots.is_empty() {
                 println!("No enabled roots, sleeping for 1s");
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                compio::time::sleep(Duration::from_secs(1)).await;
                 continue 'main;
             }
 
@@ -377,16 +444,17 @@ async fn precache_file<P>(path: P) -> Result<(), std::io::Error>
 where
     P: AsRef<Path>,
 {
-    use tokio::io::AsyncReadExt;
+    use compio::io::AsyncReadExt;
 
     let path = path.as_ref();
 
     println!("Pre-caching file: {}", path.display());
 
-    let file = tokio::fs::File::open(path).await?;
+    let file = compio::fs::File::open(path).await?;
+    let file = std::io::Cursor::new(file);
 
     let mut take = file.take(PRECACHE_READ_BYTES);
-    match tokio::io::copy(&mut take, &mut tokio::io::sink()).await {
+    match compio::io::copy(&mut take, &mut WriteSink).await {
         Ok(n) => println!("Pre-cached {n} bytes from file {}", path.display()),
         Err(error) => {
             println!("Failed to read file {}: {error}", path.display());
@@ -394,4 +462,20 @@ where
         }
     }
     Ok(())
+}
+
+struct WriteSink;
+
+impl compio::io::AsyncWrite for WriteSink {
+    async fn write<T: IoBuf>(&mut self, buf: T) -> BufResult<usize, T> {
+        BufResult(Ok(buf.buf_len()), buf)
+    }
+
+    async fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    async fn shutdown(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }

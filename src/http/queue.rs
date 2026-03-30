@@ -141,7 +141,7 @@ impl Queue {
     }
 }
 
-#[derive(Default, Debug, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone, Eq, PartialEq)]
 pub struct QueueStats {
     pub video_count: usize,
     pub image_count: usize,
