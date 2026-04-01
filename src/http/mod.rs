@@ -89,7 +89,7 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
     #[cfg(feature = "immich")]
     compio::runtime::spawn(immich_queue_feeder(queue)).detach();
 
-    std::thread::spawn(move || queue_feeder(queue, None));
+    compio::runtime::spawn(queue_feeder(queue, None)).detach();
 
     let address = SocketAddr::from(([0, 0, 0, 0], port));
     println!("Listening on http://{address}");
@@ -123,7 +123,6 @@ where
                     && entry.expires_at < now
                 {
                     cache.pop_lru();
-                    cache = CACHE.borrow_mut();
                 }
             }
         })
@@ -170,6 +169,10 @@ impl FileKind {
     pub const ALL: [Self; 3] = [Self::Video, Self::Audio, Self::Image];
     pub const NUM_VARIANTS: usize = Self::ALL.len();
 
+    fn is_valid_char(c: char) -> bool {
+        c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-' || c == '_'
+    }
+
     fn from_path<P>(path: P) -> Option<Self>
     where
         P: AsRef<Path>,
@@ -177,7 +180,7 @@ impl FileKind {
         let path = path.as_ref();
         let extension = path.extension()?.to_str()?;
 
-        let extension = if extension.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+        let extension = if extension.chars().all(Self::is_valid_char) {
             Cow::Borrowed(extension)
         } else {
             Cow::Owned(extension.to_ascii_lowercase())
@@ -187,7 +190,7 @@ impl FileKind {
     }
 
     fn from_extension(extension: &str) -> Option<Self> {
-        assert!(extension.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+        assert!(extension.chars().all(Self::is_valid_char));
         match extension {
             "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "svg" | "avif" | "ico" | "apng" => {
                 Some(Self::Image)
@@ -323,7 +326,7 @@ async fn reset_queue_handler() -> impl IntoResponse {
     let queue = QUEUE.get().unwrap();
 
     queue.reset().await;
-    std::thread::spawn(|| queue_feeder(queue, Some(1)));
+    compio::runtime::spawn(queue_feeder(queue, Some(1))).detach();
     StatusCode::NO_CONTENT
 }
 
@@ -414,6 +417,19 @@ async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     Sse::new(stream)
 }
 
+fn filter_path<P>(path: P) -> bool
+where
+    P: AsRef<Path>,
+{
+    let stats = QUEUE.get().unwrap().stats();
+    match FileKind::from_path(path) {
+        Some(FileKind::Video) if stats.video_count < Queue::QUEUE_SIZE => true,
+        Some(FileKind::Image) if stats.image_count < Queue::QUEUE_SIZE => true,
+        Some(FileKind::Audio) if stats.audio_count < Queue::QUEUE_SIZE => true,
+        _ => false,
+    }
+}
+
 #[cfg(feature = "immich")]
 async fn immich_queue_feeder(queue: &Queue) {
     let immich = {
@@ -429,9 +445,18 @@ async fn immich_queue_feeder(queue: &Queue) {
     'main: loop {
         let queue_len = queue.len();
         // Start at 100ms and scale up to 10s based on queue length.
-        let mut timeout_ms = 100 + (9900 * queue_len / Queue::QUEUE_SIZE);
+        let mut timeout_ms = 100 + (9900 * queue_len / Queue::MAX_QUEUE_SIZE);
 
         let path = loop {
+            if queue.len() == Queue::MAX_QUEUE_SIZE {
+                let listener = queue.observe_pop();
+                if queue.len() == Queue::MAX_QUEUE_SIZE {
+                    println!("Queue is full, waiting for pop");
+                    listener.await;
+                    continue 'main;
+                }
+            }
+
             let mut roots = queue.enabled_roots().read_async().await.clone();
             if roots.is_empty() {
                 println!("No enabled roots, sleeping for 1s");
@@ -448,13 +473,22 @@ async fn immich_queue_feeder(queue: &Queue) {
 
             let timeout = Duration::from_millis(timeout_ms as u64) * 2;
 
-            let path =
-                random_files_immich::random_file_with_timeout(&immich, &roots, timeout).await;
+            let path = random_files_immich::random_file_with_timeout_filter(
+                &immich,
+                &roots,
+                timeout,
+                |path| filter_path(path),
+            )
+            .await;
             match path {
                 Some(path) => break path,
                 None => {
                     timeout_ms += 1000;
                     println!("[Immich] No files found, increasing timeout to {timeout_ms}ms");
+
+                    if queue.len() > 1 {
+                        compio::time::sleep(Duration::from_millis(100)).await;
+                    }
                 }
             }
         };
@@ -463,19 +497,35 @@ async fn immich_queue_feeder(queue: &Queue) {
     }
 }
 
-fn queue_feeder(queue: &Queue, max_count: Option<usize>) {
+async fn queue_feeder(queue: &Queue, max_count: Option<usize>) {
+    fn filter(path: &Path, is_dir: bool) -> bool {
+        if is_dir {
+            return true;
+        }
+        filter_path(path)
+    }
+
     println!("Starting queue feeder");
     let mut counter = 0;
     'main: loop {
         let queue_len = queue.len();
         // Start at 100ms and scale up to 10s based on queue length.
-        let mut timeout_ms = 100 + (9900 * queue_len / Queue::QUEUE_SIZE);
+        let mut timeout_ms = 100 + (9900 * queue_len / Queue::MAX_QUEUE_SIZE);
 
         let path = loop {
-            let mut roots = queue.enabled_roots().read().clone();
+            if queue.len() == Queue::MAX_QUEUE_SIZE {
+                let listener = queue.observe_pop();
+                if queue.len() == Queue::MAX_QUEUE_SIZE {
+                    println!("Queue is full, waiting for pop");
+                    listener.await;
+                    continue 'main;
+                }
+            }
+
+            let mut roots = queue.enabled_roots().read_async().await.clone();
             if roots.is_empty() {
                 println!("No enabled roots, sleeping for 1s");
-                std::thread::sleep(Duration::from_secs(1));
+                compio::time::sleep(Duration::from_secs(1)).await;
                 continue 'main;
             }
 
@@ -487,18 +537,21 @@ fn queue_feeder(queue: &Queue, max_count: Option<usize>) {
             }
 
             let timeout = Duration::from_millis(timeout_ms as u64);
-            let path = random_files::random_file_with_timeout(&roots, timeout);
+            let path = random_files::random_file_with_timeout_filter(&roots, timeout, filter).await;
 
             match path {
                 Some(path) => break path,
                 None => {
                     timeout_ms += 1000;
                     println!("No files found, increasing timeout to {timeout_ms}ms");
+                    if queue.len() > 1 {
+                        compio::time::sleep(Duration::from_millis(100)).await;
+                    }
                 }
             }
         };
 
-        queue.push(path);
+        queue.push_async(path).await;
 
         if max_count.is_some_and(|v| counter >= v) {
             break;

@@ -7,6 +7,7 @@ use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
+use triomphe::Arc;
 
 use crate::random_files::{ScanResult, reduce_scan_result};
 
@@ -15,25 +16,42 @@ pub async fn random_file_with_timeout(
     roots: &[PathBuf],
     timeout: Duration,
 ) -> Option<PathBuf> {
+    random_file_with_timeout_filter(client, roots, timeout, |_| true).await
+}
+
+pub async fn random_file_with_timeout_filter<F>(
+    client: &ImmichClient,
+    roots: &[PathBuf],
+    timeout: Duration,
+    filter: F,
+) -> Option<PathBuf>
+where
+    F: Fn(&Utf8Path) -> bool + 'static,
+{
     if roots.is_empty() {
         return None;
     }
 
     let deadline = std::time::Instant::now() + timeout;
+    let filter = Arc::new(filter);
 
     let mut futures = FuturesUnordered::new();
     for root in roots {
         let client = client.clone();
         let root = Utf8Path::from_path(root).expect("Invalid path").to_path_buf();
+        let filter = filter.clone();
         let future =
-            compio::runtime::spawn(async move { search_root(&client, &root, deadline).await });
+            compio::runtime::spawn(
+                async move { search_root(&client, &root, deadline, &*filter).await },
+            );
         futures.push(future);
     }
 
+    let mut rng = rand::rng();
     let mut search_result = ScanResult::default();
     while let Some(result) = futures.next().await {
         match result {
-            Ok(Ok(result)) => search_result = reduce_scan_result(search_result, result),
+            Ok(Ok(result)) => search_result = reduce_scan_result(search_result, result, &mut rng),
             Ok(Err(error)) => eprintln!("Error searching roots: {error:?}"),
             Err(error) => eprintln!("Search roots task panicked: {error:?}"),
         }
@@ -42,14 +60,19 @@ pub async fn random_file_with_timeout(
     search_result.selected.map(Into::into)
 }
 
-async fn search_root(
+async fn search_root<F>(
     client: &ImmichClient,
     root: &Utf8Path,
     deadline: std::time::Instant,
-) -> Result<ScanResult<Utf8PathBuf>, cyper::Error> {
+    filter: F,
+) -> Result<ScanResult<Utf8PathBuf>, cyper::Error>
+where
+    F: Fn(&Utf8Path) -> bool,
+{
     let base = SearchRequest { original_path: root.as_str() };
     let mut request = SearchPageRequest { base, page: 1, size: 1000 };
 
+    let mut rng = rand::rng();
     let mut search_result = ScanResult::default();
     loop {
         if std::time::Instant::now() >= deadline {
@@ -78,11 +101,18 @@ async fn search_root(
                     .assets
                     .items
                     .into_iter()
-                    .map(|item| ScanResult { selected: Some(item.original_path.into()), count: 1 })
-                    .reduce(reduce_scan_result)
-                    .unwrap();
+                    .filter_map(|item| {
+                        let path = Utf8PathBuf::from(item.original_path);
+                        if filter(&path) {
+                            Some(ScanResult { selected: Some(path), count: 1 })
+                        } else {
+                            None
+                        }
+                    })
+                    .reduce(|a, b| reduce_scan_result(a, b, &mut rng))
+                    .unwrap_or_default();
 
-                search_result = reduce_scan_result(search_result, page_result);
+                search_result = reduce_scan_result(search_result, page_result, &mut rng);
 
                 request.page += 1;
                 compio::time::sleep(Duration::from_millis(50)).await;

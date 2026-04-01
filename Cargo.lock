@@ -6363,6 +6363,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tower",
+ "triomphe",
  "urlencoding",
  "z-queue",
  "z-sync",
@@ -6371,7 +6372,7 @@ dependencies = [
 [[package]]
 name = "z-queue"
 version = "0.1.0"
-source = "git+https://github.com/imzacm/z-queue.git?rev=524d3466e2f7461486576640e72b9a86807eb6ad#524d3466e2f7461486576640e72b9a86807eb6ad"
+source = "git+https://github.com/imzacm/z-queue.git?rev=6ca381174d573eb4ff80467cd027e2ce44021ab8#6ca381174d573eb4ff80467cd027e2ce44021ab8"
 dependencies = [
  "arc-swap",
  "crossbeam-queue",
@@ -6388,10 +6389,12 @@ dependencies = [
 [[package]]
 name = "z-sync"
 version = "0.1.0"
-source = "git+https://github.com/imzacm/z-sync.git?rev=1e441255526f6bcc3cecd2d97a2ffb246a795859#1e441255526f6bcc3cecd2d97a2ffb246a795859"
+source = "git+https://github.com/imzacm/z-sync.git?rev=cd51bb3782ccfc724cc473246cbc46414aaa1dfe#cd51bb3782ccfc724cc473246cbc46414aaa1dfe"
 dependencies = [
  "crossbeam-utils",
+ "num-traits",
  "parking_lot_core",
+ "pin-project-lite",
  "thin-vec",
 ]
 

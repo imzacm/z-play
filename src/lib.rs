@@ -10,6 +10,7 @@ pub mod playback_speed;
 pub mod random_files;
 #[cfg(feature = "immich")]
 pub mod random_files_immich;
+pub mod storage_class;
 #[cfg(feature = "app")]
 pub mod ui;
 pub mod walkdir;

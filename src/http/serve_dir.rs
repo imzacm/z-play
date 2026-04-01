@@ -42,27 +42,43 @@ pub async fn serve_dir(
 
     // Parse the HTTP Range header
     let mut start = 0;
-    let mut end = file_size - 1;
+    let mut end = file_size.saturating_sub(1);
     let mut is_range = false;
 
-    let headers = request.headers();
-    if let Some(range_hdr) = headers.get(header::RANGE) {
+    if let Some(range_hdr) = request.headers().get(header::RANGE) {
         if let Ok(range_str) = range_hdr.to_str() {
             if range_str.starts_with("bytes=") {
-                let parts: Vec<&str> = range_str["bytes=".len()..].split('-').collect();
-                if let Some(start_str) = parts.get(0) {
-                    if let Ok(s) = start_str.parse::<u64>() {
-                        start = s;
-                        is_range = true;
-                    }
-                }
-                if let Some(end_str) = parts.get(1) {
-                    if let Ok(e) = end_str.parse::<u64>() {
-                        end = e.min(file_size - 1);
+                let range = &range_str["bytes=".len()..];
+                if let Some((start_str, end_str)) = range.split_once('-') {
+                    if start_str.is_empty() {
+                        // Suffix Range: `bytes=-500` (last 500 bytes)
+                        if let Ok(suffix) = end_str.parse::<u64>() {
+                            start = file_size.saturating_sub(suffix);
+                            end = file_size.saturating_sub(1);
+                            is_range = true;
+                        }
+                    } else {
+                        // Standard / Prefix Range: `bytes=500-1000` or `bytes=500-`
+                        if let Ok(s) = start_str.parse::<u64>() {
+                            start = s;
+                            is_range = true;
+                            if let Ok(e) = end_str.parse::<u64>() {
+                                end = e.min(file_size.saturating_sub(1));
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+
+    // Validate Range Bounds
+    if start >= file_size || start > end {
+        return (
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            [(header::CONTENT_RANGE, format!("bytes */{file_size}"))],
+        )
+            .into_response();
     }
 
     let chunk_size = end - start + 1;
@@ -74,17 +90,16 @@ pub async fn serve_dir(
         let file = open_file(path).await.expect("Failed to open file");
 
         let mut current_offset = start;
-        let buffer_size = 64 * 1024; // Stream in 64KB chunks
+        let buffer_size: usize = 1024 * 1024; // Stream in 1MB chunks
 
         while current_offset <= end {
             // Calculate how much we have left to read
-            let read_size = (end - current_offset + 1).min(buffer_size) as usize;
+            let read_size = (end - current_offset + 1).min(buffer_size as u64) as usize;
 
-            // Allocate a buffer for Compio to write into
-            let buf = vec![0u8; read_size];
+            let buffer = vec![0u8; read_size];
 
             // Perform the async read exactly at our current offset
-            let BufResult(result, mut data) = file.read_at(buf, current_offset).await;
+            let BufResult(result, mut data) = file.read_at(buffer, current_offset).await;
             match result {
                 Ok(bytes_read) => {
                     if bytes_read == 0 {
@@ -114,7 +129,9 @@ pub async fn serve_dir(
     // Build the correct HTTP Response
     let mut response = Response::builder()
         .header(header::CONTENT_TYPE, mime.as_ref())
-        .header(header::ACCEPT_RANGES, "bytes");
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONNECTION, "keep-alive")
+        .header(header::CACHE_CONTROL, "public, max-age=31536000");
 
     // If it's a range request, we MUST return a 206 Partial Content status
     if is_range {
@@ -125,8 +142,6 @@ pub async fn serve_dir(
     } else {
         response = response.status(StatusCode::OK).header(header::CONTENT_LENGTH, file_size);
     }
-
-    response = response.header(header::CACHE_CONTROL, "public, max-age=31536000");
 
     let stream = rx.into_stream();
     response.body(Body::from_stream(stream)).unwrap().into_response()

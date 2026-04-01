@@ -13,7 +13,7 @@ debug = 0
 [features]
 default = ["app", "http"]
 app = ["dep:glib", "dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:eframe", "dep:rfd", "dep:keepawake"]
-http = ["dep:compio", "dep:cyper-axum", "dep:tower", "dep:axum", "dep:axum-extra", "dep:urlencoding", "dep:serde", "dep:serde_json", "dep:mime_guess", "dep:lru"]
+http = ["dep:compio", "dep:cyper-axum", "dep:tower", "dep:axum", "dep:axum-extra", "dep:urlencoding", "dep:serde", "dep:serde_json", "dep:mime_guess", "dep:lru", "dep:camino", "dep:http"]
 immich = ["dep:serde", "dep:cyper", "dep:http", "dep:camino", "parking_lot/send_guard"]
 
 [dependencies]
@@ -56,14 +56,16 @@ cyper = { version = "0.8", optional = true, features = ["json"] }
 http = { version = "1", optional = true }
 camino = { version = "1", optional = true }
 
-z-sync = { git = "https://github.com/imzacm/z-sync.git", rev = "1e441255526f6bcc3cecd2d97a2ffb246a795859" }
-
 rustix = { version = "1", features = ["fs"] }
 
 futures-util = "0.3"
 tokio = { version = "1", default-features = false, features = ["sync"] }
 
+triomphe = "0.1"
+
+z-sync = { git = "https://github.com/imzacm/z-sync.git", rev = "cd51bb3782ccfc724cc473246cbc46414aaa1dfe" }
+
 [dependencies.z-queue]
 git = "https://github.com/imzacm/z-queue.git"
-rev = "524d3466e2f7461486576640e72b9a86807eb6ad"
+rev = "6ca381174d573eb4ff80467cd027e2ce44021ab8"
 features = ["map", "triomphe", "rand", "crossbeam-queue", "stream"]

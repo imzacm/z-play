@@ -4,19 +4,19 @@ use std::path::PathBuf;
 use rustc_hash::{FxBuildHasher, FxHashSet};
 use z_queue::ZQueueMap;
 use z_queue::container::CrossbeamArrayQueue;
-use z_sync::Lock;
 
 use crate::http::FileKind;
 
 pub struct Queue {
-    enabled_roots: Lock<Vec<PathBuf>>,
-    disabled_roots: Lock<Vec<PathBuf>>,
+    enabled_roots: z_sync::Lock16<Vec<PathBuf>>,
+    disabled_roots: z_sync::Lock16<Vec<PathBuf>>,
     queue: ZQueueMap<FileKind, CrossbeamArrayQueue<PathBuf>, FxBuildHasher>,
-    queued_files: Lock<FxHashSet<PathBuf>>,
+    queued_files: z_sync::Lock16<FxHashSet<PathBuf>>,
 }
 
 impl Queue {
     pub const QUEUE_SIZE: usize = 1000;
+    pub const MAX_QUEUE_SIZE: usize = Self::QUEUE_SIZE * 3;
 
     pub fn new(roots: Vec<PathBuf>) -> Self {
         let len = roots.len();
@@ -24,10 +24,10 @@ impl Queue {
         queued_files.reserve(Self::QUEUE_SIZE);
         let queue_size = NonZeroUsize::new(Self::QUEUE_SIZE).unwrap();
         Self {
-            enabled_roots: Lock::new(roots),
-            disabled_roots: Lock::new(Vec::with_capacity(len)),
+            enabled_roots: z_sync::Lock::new(roots),
+            disabled_roots: z_sync::Lock::new(Vec::with_capacity(len)),
             queue: ZQueueMap::bounded(FileKind::NUM_VARIANTS, queue_size),
-            queued_files: Lock::new(queued_files),
+            queued_files: z_sync::Lock::new(queued_files),
         }
     }
 
@@ -43,11 +43,19 @@ impl Queue {
         QueueStats { video_count, image_count, audio_count }
     }
 
-    pub fn enabled_roots(&self) -> &Lock<Vec<PathBuf>> {
+    pub fn observe_push(&self) -> z_sync::notify::NotifyListener<'_> {
+        self.queue.observe_push()
+    }
+
+    pub fn observe_pop(&self) -> z_sync::notify::NotifyListener<'_> {
+        self.queue.observe_pop()
+    }
+
+    pub fn enabled_roots(&self) -> &z_sync::Lock16<Vec<PathBuf>> {
         &self.enabled_roots
     }
 
-    pub fn disabled_roots(&self) -> &Lock<Vec<PathBuf>> {
+    pub fn disabled_roots(&self) -> &z_sync::Lock16<Vec<PathBuf>> {
         &self.disabled_roots
     }
 
