@@ -1,5 +1,5 @@
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rustc_hash::{FxBuildHasher, FxHashSet};
 use z_queue::ZQueueMap;
@@ -41,6 +41,10 @@ impl Queue {
         let audio_count = self.queue.len(&FileKind::Audio);
 
         QueueStats { video_count, image_count, audio_count }
+    }
+
+    pub fn contains_path(&self, path: &Path) -> bool {
+        self.queued_files.read().contains(path)
     }
 
     pub fn observe_push(&self) -> z_sync::notify::NotifyListener<'_> {

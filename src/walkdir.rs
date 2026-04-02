@@ -131,7 +131,7 @@ where
 
                     let device = (device, storage_class);
                     let worker_count =
-                        if matches!(storage_class, StorageClass::Hdd { .. }) { 1 } else { 4 };
+                        if matches!(storage_class, StorageClass::Hdd { .. }) { 1 } else { 2 };
 
                     for _ in 0..worker_count {
                         let this = this.clone();
@@ -139,6 +139,9 @@ where
 
                         compio::runtime::spawn(async move {
                             while let Ok((path, dir_fd)) = rx.recv_async().await {
+                                // Reduce CPU usage by taking a small break.
+                                compio::time::sleep(std::time::Duration::from_millis(5)).await;
+
                                 let this_clone = this.clone();
                                 let result = compio::runtime::spawn_blocking(move || {
                                     read_dir(path, &this_clone, device, dir_fd)
@@ -318,12 +321,21 @@ where
     let mut buffer = Vec::with_capacity(64 * 1024);
     let mut iter = rustix::fs::RawDir::new(dir_fd.as_fd(), buffer.spare_capacity_mut());
 
+    let mut counter: usize = 0;
+
     // Iterate over the entries.
     while let Some(entry_result) = iter.next() {
         if let Some(deadline) = walk.deadline
             && Instant::now() > deadline
         {
             return Ok(());
+        }
+
+        counter = counter.wrapping_add(1);
+        if counter % 2048 == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        } else if counter % 1024 == 0 {
+            std::thread::yield_now();
         }
 
         let entry = entry_result?;

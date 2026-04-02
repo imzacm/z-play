@@ -421,7 +421,12 @@ fn filter_path<P>(path: P) -> bool
 where
     P: AsRef<Path>,
 {
-    let stats = QUEUE.get().unwrap().stats();
+    let queue = QUEUE.get().unwrap();
+    if queue.contains_path(path.as_ref()) {
+        return false;
+    }
+
+    let stats = queue.stats();
     match FileKind::from_path(path) {
         Some(FileKind::Video) if stats.video_count < Queue::QUEUE_SIZE => true,
         Some(FileKind::Image) if stats.image_count < Queue::QUEUE_SIZE => true,
