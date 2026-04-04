@@ -59,13 +59,13 @@ camino = { version = "1", optional = true }
 rustix = { version = "1", features = ["fs"] }
 
 futures-util = "0.3"
-tokio = { version = "1", default-features = false, features = ["sync"] }
+tokio = { version = "1", default-features = false, features = ["sync", "macros"] }
 
 triomphe = "0.1"
 
-z-sync = { git = "https://github.com/imzacm/z-sync.git", rev = "cd51bb3782ccfc724cc473246cbc46414aaa1dfe" }
+z-sync = { git = "https://github.com/imzacm/z-sync.git", rev = "f617b87367c077cc6698060bdd4e8d1e2e62acae" }
 
 [dependencies.z-queue]
 git = "https://github.com/imzacm/z-queue.git"
-rev = "6ca381174d573eb4ff80467cd027e2ce44021ab8"
+rev = "f33097c7e2f4652aad74556b35a829ab71981430"
 features = ["map", "triomphe", "rand", "crossbeam-queue", "stream"]

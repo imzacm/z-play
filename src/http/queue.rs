@@ -95,6 +95,19 @@ impl Queue {
         self.queue.push(file_kind, path);
     }
 
+    pub fn remove(&self, path: &Path) {
+        if !self.queued_files.write().remove(path) {
+            return;
+        }
+
+        let Some(file_kind) = FileKind::from_path(path) else {
+            eprintln!("Unknown file type: {}", path.display());
+            return;
+        };
+
+        self.queue.retain(|k| *k == file_kind, |path| path != path);
+    }
+
     pub async fn reset(&self) {
         self.queue.clear_async().await;
         self.queued_files.write_async().await.clear();
@@ -158,4 +171,22 @@ pub struct QueueStats {
     pub video_count: usize,
     pub image_count: usize,
     pub audio_count: usize,
+}
+
+impl QueueStats {
+    pub fn add(&mut self, kind: FileKind) {
+        match kind {
+            FileKind::Video => self.video_count += 1,
+            FileKind::Image => self.image_count += 1,
+            FileKind::Audio => self.audio_count += 1,
+        }
+    }
+
+    pub fn remove(&mut self, kind: FileKind) {
+        match kind {
+            FileKind::Video => self.video_count -= 1,
+            FileKind::Image => self.image_count -= 1,
+            FileKind::Audio => self.audio_count -= 1,
+        }
+    }
 }

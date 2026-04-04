@@ -9,7 +9,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -26,13 +26,17 @@ use camino::{Utf8Path, Utf8PathBuf};
 use compio::BufResult;
 use compio::buf::IoBuf;
 use futures_util::Stream;
-use rustc_hash::{FxBuildHasher, FxHashSet};
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
+use triomphe::Arc;
+use z_play::inotify::{self, INotify};
 use z_play::random_files;
 #[cfg(feature = "immich")]
 use z_play::random_files_immich::{self, ImmichClient};
+use z_play::walkdir::walk_roots_filter;
 
 use self::queue::Queue;
+use crate::http::queue::QueueStats;
 
 const QUEUE_COUNT_HEADER: HeaderName = HeaderName::from_static("x-queue-count");
 const QUEUE_SIZE_HEADER: HeaderName = HeaderName::from_static("x-queue-size");
@@ -90,6 +94,8 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
     compio::runtime::spawn(immich_queue_feeder(queue)).detach();
 
     compio::runtime::spawn(queue_feeder(queue, None)).detach();
+
+    std::thread::spawn(|| directory_counts());
 
     let address = SocketAddr::from(([0, 0, 0, 0], port));
     println!("Listening on http://{address}");
@@ -518,6 +524,26 @@ async fn queue_feeder(queue: &Queue, max_count: Option<usize>) {
         let mut timeout_ms = 100 + (9900 * queue_len / Queue::MAX_QUEUE_SIZE);
 
         let path = loop {
+            let pop_listener = queue.observe_pop();
+            let dir_count_listener = DIR_COUNTS.notify.listener();
+            {
+                let total_counts = DIR_COUNTS.total_counts.read();
+                let queue_counts = queue.stats();
+                if (queue_counts.video_count == Queue::QUEUE_SIZE
+                    || queue_counts.video_count == total_counts.video_count)
+                    && (queue_counts.image_count == Queue::QUEUE_SIZE
+                        || queue_counts.image_count == total_counts.image_count)
+                    && (queue_counts.audio_count == Queue::QUEUE_SIZE
+                        || queue_counts.audio_count == total_counts.audio_count)
+                {
+                    println!("Queue contains all available files, waiting for pop or new files");
+                    tokio::select! {
+                        _ = pop_listener => (),
+                        _ = dir_count_listener => (),
+                    }
+                }
+            }
+
             if queue.len() == Queue::MAX_QUEUE_SIZE {
                 let listener = queue.observe_pop();
                 if queue.len() == Queue::MAX_QUEUE_SIZE {
@@ -562,6 +588,247 @@ async fn queue_feeder(queue: &Queue, max_count: Option<usize>) {
             break;
         }
         counter += 1;
+    }
+}
+
+#[derive(Debug)]
+struct DirectoryCounts {
+    total_counts: Arc<z_sync::Lock16<QueueStats>>,
+    dir_counts: Arc<z_sync::Lock16<FxHashMap<PathBuf, QueueStats>>>,
+    notify: z_sync::Notify16,
+}
+
+static DIR_COUNTS: LazyLock<DirectoryCounts> = LazyLock::new(|| {
+    let mut total_counts = QueueStats::default();
+
+    // Stop the queue from pausing before initial counts are loaded.
+    total_counts.video_count = usize::MAX;
+    total_counts.image_count = usize::MAX;
+    total_counts.audio_count = usize::MAX;
+
+    DirectoryCounts {
+        total_counts: Arc::new(z_sync::Lock16::new(total_counts)),
+        dir_counts: Arc::new(z_sync::Lock16::new(FxHashMap::default())),
+        notify: z_sync::Notify16::new(),
+    }
+});
+
+fn directory_counts() {
+    let inotify = match INotify::new() {
+        Ok(inotify) => Arc::new(inotify),
+        Err(error) => {
+            eprintln!("Failed to initialize inotify: {error}");
+            return;
+        }
+    };
+
+    let roots = {
+        let mut roots = Vec::new();
+        let queue = QUEUE.get().unwrap();
+        roots.extend(queue.enabled_roots().read().clone());
+        roots.extend(queue.disabled_roots().read().clone());
+        roots
+    };
+
+    let total_counts = Arc::new(z_sync::Lock16::new(QueueStats::default()));
+
+    let inotify_clone = inotify.clone();
+    let total_counts_clone = total_counts.clone();
+    let filter = move |path: &Path, is_dir: bool| {
+        if is_dir {
+            let result = inotify_clone.add_watch(
+                path.to_path_buf(),
+                rustix::fs::inotify::WatchFlags::DELETE_SELF
+                    | rustix::fs::inotify::WatchFlags::DELETE
+                    | rustix::fs::inotify::WatchFlags::CREATE
+                    | rustix::fs::inotify::WatchFlags::MOVE
+                    | rustix::fs::inotify::WatchFlags::MOVE_SELF,
+            );
+            if let Err(error) = result {
+                eprintln!("Failed to add watch for {}: {error}", path.display());
+            }
+            DIR_COUNTS.dir_counts.write().insert(path.to_path_buf(), QueueStats::default());
+            return true;
+        }
+
+        let Some(kind) = FileKind::from_path(path) else { return false };
+
+        total_counts_clone.write().add(kind);
+        let parent = path.parent().unwrap();
+        let mut dir_counts = DIR_COUNTS.dir_counts.write();
+        if !dir_counts.contains_key(parent) {
+            dir_counts.insert(parent.to_path_buf(), QueueStats::default());
+        }
+        dir_counts.get_mut(parent).unwrap().add(kind);
+
+        true
+    };
+
+    let compio_rt = compio::runtime::Runtime::new().unwrap();
+
+    compio_rt.block_on(async move {
+        let rx = match walk_roots_filter(&roots, None, filter).await {
+            Ok(rx) => rx,
+            Err(error) => {
+                eprintln!("Failed to walk roots: {error}");
+                return;
+            }
+        };
+
+        while let Ok(_) = rx.recv_async().await {}
+    });
+
+    {
+        let mut total_counts = total_counts.write();
+        let mut static_total_counts = DIR_COUNTS.total_counts.write();
+        std::mem::swap(&mut *total_counts, &mut *static_total_counts);
+    }
+
+    loop {
+        let mut delete_dirs = FxHashSet::default();
+        let mut add_dirs = Vec::new();
+
+        let visit = |event: inotify::Event<'_>| {
+            let is_delete_self = event.mask.contains(rustix::fs::inotify::ReadFlags::DELETE_SELF);
+            let is_move_self = event.mask.contains(rustix::fs::inotify::ReadFlags::MOVE_SELF);
+            let path = if is_delete_self || is_move_self {
+                event.dir.clone()
+            } else {
+                let name = event.name.unwrap();
+                event.dir.join(name)
+            };
+
+            let is_dir = event.mask.contains(rustix::fs::inotify::ReadFlags::ISDIR);
+            let is_delete = event.mask.contains(rustix::fs::inotify::ReadFlags::DELETE);
+            let is_create = event.mask.contains(rustix::fs::inotify::ReadFlags::CREATE);
+            let is_move_from = event.mask.contains(rustix::fs::inotify::ReadFlags::MOVED_FROM);
+            let is_move_to = event.mask.contains(rustix::fs::inotify::ReadFlags::MOVED_TO);
+
+            if is_dir {
+                if is_delete || is_move_from || is_delete_self || is_move_self {
+                    delete_dirs.insert(path);
+                } else if is_create || is_move_to {
+                    let result = inotify.add_watch(
+                        path.clone(),
+                        rustix::fs::inotify::WatchFlags::DELETE_SELF
+                            | rustix::fs::inotify::WatchFlags::DELETE
+                            | rustix::fs::inotify::WatchFlags::CREATE
+                            | rustix::fs::inotify::WatchFlags::MOVE
+                            | rustix::fs::inotify::WatchFlags::MOVE_SELF,
+                    );
+                    if let Err(error) = result {
+                        eprintln!("Failed to add watch for {}: {error}", path.display());
+                    }
+                    DIR_COUNTS.dir_counts.write().insert(path.clone(), QueueStats::default());
+                    add_dirs.push(path);
+                }
+                return;
+            }
+
+            let Some(kind) = FileKind::from_path(&path) else { return };
+            let parent = path.parent().unwrap();
+            if is_delete || is_move_from {
+                if let Some(counts) = DIR_COUNTS.dir_counts.write().get_mut(parent) {
+                    counts.remove(kind);
+                }
+                DIR_COUNTS.total_counts.write().remove(kind);
+
+                QUEUE.get().unwrap().remove(&path);
+            } else if is_create || is_move_to {
+                {
+                    let mut dir_counts = DIR_COUNTS.dir_counts.write();
+                    if !dir_counts.contains_key(parent) {
+                        dir_counts.insert(parent.to_path_buf(), QueueStats::default());
+                    }
+                    DIR_COUNTS.dir_counts.write().get_mut(parent).unwrap().add(kind);
+                }
+
+                DIR_COUNTS.total_counts.write().add(kind);
+
+                DIR_COUNTS.notify.notify(1);
+            }
+        };
+
+        if let Err(error) = inotify.wait(visit) {
+            eprintln!("Failed to wait for inotify events: {error}");
+        }
+
+        let queue = QUEUE.get().unwrap();
+
+        {
+            {
+                let mut total_counts = DIR_COUNTS.total_counts.write();
+                let mut dir_counts = DIR_COUNTS.dir_counts.write();
+
+                {
+                    let mut enabled_roots = queue.enabled_roots().write();
+                    let mut disabled_roots = queue.disabled_roots().write();
+                    for path in delete_dirs {
+                        dir_counts.retain(|p, counts| {
+                            if !p.starts_with(&path) {
+                                return true;
+                            }
+
+                            total_counts.video_count -= counts.video_count;
+                            total_counts.image_count -= counts.image_count;
+                            total_counts.audio_count -= counts.audio_count;
+                            false
+                        });
+
+                        enabled_roots.retain(|p| !p.starts_with(&path));
+                        disabled_roots.retain(|p| !p.starts_with(&path));
+                    }
+                }
+            }
+
+            compio_rt.block_on(queue.refresh_roots());
+        }
+
+        let inotify_clone = inotify.clone();
+        let filter = move |path: &Path, is_dir: bool| {
+            if is_dir {
+                let result = inotify_clone.add_watch(
+                    path.to_path_buf(),
+                    rustix::fs::inotify::WatchFlags::DELETE_SELF
+                        | rustix::fs::inotify::WatchFlags::DELETE
+                        | rustix::fs::inotify::WatchFlags::CREATE
+                        | rustix::fs::inotify::WatchFlags::MOVE
+                        | rustix::fs::inotify::WatchFlags::MOVE_SELF,
+                );
+                if let Err(error) = result {
+                    eprintln!("Failed to add watch for {}: {error}", path.display());
+                }
+                DIR_COUNTS.dir_counts.write().insert(path.to_path_buf(), QueueStats::default());
+                return true;
+            }
+
+            let Some(kind) = FileKind::from_path(path) else { return false };
+
+            DIR_COUNTS.total_counts.write().add(kind);
+            let parent = path.parent().unwrap();
+            let mut dir_counts = DIR_COUNTS.dir_counts.write();
+            if !dir_counts.contains_key(parent) {
+                dir_counts.insert(parent.to_path_buf(), QueueStats::default());
+            }
+            dir_counts.get_mut(parent).unwrap().add(kind);
+
+            // This is a new dir, so presumably the file is also new.
+            DIR_COUNTS.notify.notify(1);
+
+            true
+        };
+
+        compio_rt.block_on(async move {
+            let rx = match walk_roots_filter(&add_dirs, None, filter).await {
+                Ok(rx) => rx,
+                Err(error) => {
+                    eprintln!("Failed to walk roots: {error}");
+                    return;
+                }
+            };
+
+            while let Ok(_) = rx.recv_async().await {}
+        });
     }
 }
 

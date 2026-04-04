@@ -2,6 +2,7 @@
 
 #[cfg(feature = "app")]
 pub mod app;
+pub mod inotify;
 pub mod path_cache;
 #[cfg(feature = "app")]
 pub mod pipeline;
