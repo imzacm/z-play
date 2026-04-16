@@ -15,7 +15,7 @@ pub struct Queue {
 }
 
 impl Queue {
-    pub const QUEUE_SIZE: usize = 1000;
+    pub const QUEUE_SIZE: usize = 100;
     pub const MAX_QUEUE_SIZE: usize = Self::QUEUE_SIZE * 3;
 
     pub fn new(roots: Vec<PathBuf>) -> Self {

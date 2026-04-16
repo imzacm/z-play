@@ -1,14 +1,14 @@
+mod file_cache;
 mod queue;
 mod serve_dir;
 
 use std::borrow::Cow;
-use std::cell::{LazyCell, RefCell};
+use std::cell::LazyCell;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::rc::Rc;
 use std::sync::{LazyLock, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -23,10 +23,8 @@ use axum::routing::{get, patch};
 use axum::{Router, middleware};
 use axum_extra::extract::Query;
 use camino::{Utf8Path, Utf8PathBuf};
-use compio::BufResult;
-use compio::buf::IoBuf;
 use futures_util::Stream;
-use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use triomphe::Arc;
 use z_play::inotify::{self, INotify};
@@ -44,13 +42,13 @@ const QUEUE_VIDEO_COUNT_HEADER: HeaderName = HeaderName::from_static("x-queue-vi
 const QUEUE_IMAGE_COUNT_HEADER: HeaderName = HeaderName::from_static("x-queue-image-count");
 const QUEUE_AUDIO_COUNT_HEADER: HeaderName = HeaderName::from_static("x-queue-audio-count");
 
-// Pre-cache tuning:
-// - Read up to this many bytes per queued file. Good default for mixed media: 4–16 MiB.
-//
-// 8 MiB
-const PRECACHE_READ_BYTES: u64 = 8 * 1024 * 1024;
-
 static QUEUE: OnceLock<Queue> = OnceLock::new();
+
+// 5 GiB
+const FILE_CACHE_LIMIT: usize = 5 * 1024 * 1024 * 1024;
+#[thread_local]
+static FILE_CACHE: LazyCell<file_cache::FileCache> =
+    LazyCell::new(|| file_cache::FileCache::new(FILE_CACHE_LIMIT));
 
 pub fn start_server(port: u16, roots: Vec<PathBuf>) {
     compio::runtime::Runtime::new().unwrap().block_on(async {
@@ -101,66 +99,6 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
     println!("Listening on http://{address}");
     let listener = compio::net::TcpListener::bind(address).await.unwrap();
     cyper_axum::serve(listener, app).await.unwrap();
-}
-
-async fn open_file<'p, P>(path: P) -> Result<Rc<compio::fs::File>, std::io::Error>
-where
-    P: Into<Cow<'p, Utf8Path>>,
-{
-    struct Entry {
-        file: Rc<compio::fs::File>,
-        expires_at: std::time::Instant,
-    }
-
-    type FileCache = lru::LruCache<Utf8PathBuf, Entry, FxBuildHasher>;
-
-    const CAP: NonZeroUsize = NonZeroUsize::new(200).unwrap();
-    const EXPIRY: Duration = Duration::from_secs(60);
-
-    #[thread_local]
-    static CACHE: LazyCell<RefCell<FileCache>> = LazyCell::new(|| {
-        compio::runtime::spawn(async {
-            loop {
-                compio::time::sleep(Duration::from_secs(10)).await;
-
-                let mut cache = CACHE.borrow_mut();
-                let now = std::time::Instant::now();
-                while let Some((_, entry)) = cache.peek_lru()
-                    && entry.expires_at < now
-                {
-                    cache.pop_lru();
-                }
-            }
-        })
-        .detach();
-
-        RefCell::new(lru::LruCache::with_hasher(CAP, FxBuildHasher))
-    });
-
-    let path = path.into();
-    let now = std::time::Instant::now();
-
-    {
-        let mut cache = CACHE.borrow_mut();
-        if let Some(entry) = cache.get_mut(path.as_ref()) {
-            entry.expires_at = now + EXPIRY;
-            return Ok(entry.file.clone());
-        }
-    }
-
-    let file = compio::fs::File::open(path.as_ref()).await?;
-
-    let mut cache = CACHE.borrow_mut();
-    if let Some(entry) = cache.get_mut(path.as_ref()) {
-        entry.expires_at = now + EXPIRY;
-        return Ok(entry.file.clone());
-    }
-
-    let entry = Entry { file: Rc::new(file), expires_at: std::time::Instant::now() + EXPIRY };
-    let file = entry.file.clone();
-    cache.put(path.into_owned(), entry);
-
-    Ok(file)
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -836,40 +774,24 @@ async fn precache_file<'p, P>(path: P) -> Result<(), std::io::Error>
 where
     P: Into<Cow<'p, Utf8Path>>,
 {
-    use compio::io::AsyncReadExt;
-
     let path = path.into();
 
     println!("Pre-caching file: {path}");
 
-    let file = open_file(path.as_ref()).await?;
-    let file = std::io::Cursor::new(file);
+    let file = FILE_CACHE.open(path.as_ref()).await?;
+    let mut size = file.size();
+    let mut offset = 0;
+    while size > 0 {
+        let bytes = file.read_at(offset, file_cache::CachedFile::CHUNK_SIZE as usize).await?;
 
-    let mut take = file.take(PRECACHE_READ_BYTES);
-    match compio::io::copy(&mut take, &mut WriteSink).await {
-        Ok(n) => println!("Pre-cached {n} bytes from file {path}"),
-        Err(error) => {
-            println!("Failed to read file {path}: {error}");
-            return Err(error);
+        if bytes.is_empty() {
+            break;
         }
+
+        size -= bytes.len() as u64;
+        offset += bytes.len() as u64;
     }
     Ok(())
-}
-
-struct WriteSink;
-
-impl compio::io::AsyncWrite for WriteSink {
-    async fn write<T: IoBuf>(&mut self, buf: T) -> BufResult<usize, T> {
-        BufResult(Ok(buf.buf_len()), buf)
-    }
-
-    async fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-
-    async fn shutdown(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 pub async fn yield_now() {

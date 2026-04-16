@@ -1,14 +1,13 @@
 use std::num::NonZeroUsize;
 
-use axum::body::{Body, Bytes};
+use axum::body::Body;
 use axum::extract::Path;
 use axum::response::{IntoResponse, Response};
 use camino::Utf8Path;
-use compio::BufResult;
-use compio::io::AsyncReadAt;
 use http::{StatusCode, header};
 
-use super::open_file;
+use super::FILE_CACHE;
+use crate::http::file_cache::CachedFile;
 
 #[axum::debug_handler]
 pub async fn serve_dir(
@@ -20,20 +19,13 @@ pub async fn serve_dir(
 
     let path_clone = path.clone();
     compio::runtime::spawn(async move {
-        let file = match open_file(path_clone).await {
-            Ok(file) => file,
-            Err(error) => {
-                _ = result_tx.send_async(Err(error)).await;
-                return;
-            }
-        };
-        let result = file.metadata().await;
+        let result = FILE_CACHE.open(path_clone).await.map(|file| file.size());
         _ = result_tx.send_async(result).await;
     })
     .detach();
 
     let file_size = match result_rx.recv_async().await.unwrap() {
-        Ok(metadata) => metadata.len(),
+        Ok(size) => size,
         Err(error) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("IO Error: {error:?}"))
                 .into_response();
@@ -87,31 +79,24 @@ pub async fn serve_dir(
     let (tx, rx) = z_queue::defaults::bounded(NonZeroUsize::MIN);
 
     compio::runtime::spawn(async move {
-        let file = open_file(path).await.expect("Failed to open file");
+        let file = FILE_CACHE.open(path).await.expect("Failed to open file");
 
         let mut current_offset = start;
-        let buffer_size: usize = 1024 * 1024; // Stream in 1MB chunks
+        let buffer_size: usize = CachedFile::CHUNK_SIZE as usize;
 
         while current_offset <= end {
             // Calculate how much we have left to read
             let read_size = (end - current_offset + 1).min(buffer_size as u64) as usize;
 
-            let buffer = vec![0u8; read_size];
-
-            // Perform the async read exactly at our current offset
-            let BufResult(result, mut data) = file.read_at(buffer, current_offset).await;
-            match result {
-                Ok(bytes_read) => {
-                    if bytes_read == 0 {
+            match file.read_at(current_offset, read_size).await {
+                Ok(buffer) => {
+                    if buffer.is_empty() {
                         break;
-                    } // EOF reached
+                    }
 
-                    current_offset += bytes_read as u64;
+                    current_offset += buffer.len() as u64;
 
-                    // Truncate the buffer just in case we read less than expected
-                    data.truncate(bytes_read);
-
-                    let item = Ok::<_, std::io::Error>(Bytes::from(data));
+                    let item = Ok::<_, std::io::Error>(buffer);
                     if tx.send_async(item).await.is_err() {
                         break;
                     }
