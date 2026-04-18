@@ -94,7 +94,8 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>, hls_dir: PathBuf
 
     QUEUE.get_or_init(move || Queue::new(roots));
 
-    PLAYLISTS.get_or_init(move || playlist::PlaylistManager::new(hls_dir));
+    let playlists = playlist::PlaylistManager::new(hls_dir).await;
+    PLAYLISTS.get_or_init(move || playlists);
 
     #[cfg(feature = "immich")]
     std::thread::spawn(|| {

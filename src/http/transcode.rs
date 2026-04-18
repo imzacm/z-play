@@ -207,6 +207,8 @@ where
         .arg(path.as_ref())
         .stdout(std::process::Stdio::piped())
         .unwrap()
+        .stderr(std::process::Stdio::inherit())
+        .unwrap()
         .output()
         .await?;
 
@@ -349,7 +351,7 @@ where
         "-hls_segment_type",
         "fmp4",
         "-hls_flags",
-        "independent_segments",
+        "independent_segments+temp_file",
     ]);
 
     if let Some(start_segment) = start_segment {

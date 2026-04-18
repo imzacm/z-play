@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use rustc_hash::{FxHashMap, FxHashSet};
+use z_play::inotify::{self, INotify};
+use z_sync::Notify16;
 
 use crate::http::transcode::{create_vod_playlist, get_video_duration, spawn_transcode_hls};
 
@@ -23,13 +25,9 @@ impl Playlist {
     const EXPIRES_AFTER: Duration = Duration::from_mins(30);
 
     async fn new(output_dir: PathBuf, file_path: PathBuf) -> Result<Self, std::io::Error> {
-        let create_future = compio::fs::create_dir(&output_dir);
-        let duration_future = get_video_duration(&file_path);
-
-        let (create_result, duration_result) = tokio::join!(create_future, duration_future);
-        create_result?;
-        let duration =
-            duration_result?.ok_or_else(|| std::io::Error::other("Failed to get duration"))?;
+        let duration = get_video_duration(&file_path)
+            .await?
+            .ok_or_else(|| std::io::Error::other("Failed to get duration"))?;
 
         let fake_playlist_path = output_dir.join("playlist.m3u8");
         create_vod_playlist(&fake_playlist_path, duration).await?;
@@ -59,34 +57,47 @@ impl Playlist {
         self.dir.join("_playlist.m3u8")
     }
 
-    async fn pre_read(&self, path: &Path) -> Result<(), std::io::Error> {
+    async fn pre_read(
+        &self,
+        path: &Path,
+        file_notify_map: &RefCell<FxHashMap<PathBuf, Rc<Notify16>>>,
+    ) -> Result<(), std::io::Error> {
+        let wait_for_file = async |path: &Path| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let listener = {
+                    let mut file_notify_map = file_notify_map.borrow_mut();
+                    let notify = file_notify_map
+                        .entry(path.to_owned())
+                        .or_insert_with(|| Rc::new(Notify16::new()));
+                    Notify16::rc_listener(&*notify)
+                };
+
+                if file_exists(path).await {
+                    file_notify_map.borrow_mut().remove(path);
+                    return Ok(());
+                }
+
+                if compio::time::timeout_at(deadline, listener).await.is_err() {
+                    // One last try.
+                    if file_exists(path).await {
+                        return Ok(());
+                    }
+
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "Timed out waiting for file",
+                    ));
+                }
+            }
+        };
+
         if !path.starts_with(&self.dir) {
             return Ok(());
         }
         let file_name = path.file_name().unwrap().to_str().unwrap();
 
-        let mut segment_number: Option<u16> = None;
-        if let Some(("", rest)) = file_name.split_once("seg_")
-            && let Some((num, "")) = rest.rsplit_once(".m4s")
-        {
-            match num.parse::<u16>() {
-                Ok(num) => segment_number = Some(num),
-                Err(_) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "Invalid segment number",
-                    ));
-                }
-            }
-        }
-
-        if file_name.ends_with(".m3u8") {
-            let init_path = path.with_file_name("init.mp4");
-            if self.segments.borrow().is_empty() {
-                wait_for_file(&init_path).await?;
-            }
-            return Ok(());
-        }
+        let segment_number = extract_segment_number(file_name)?;
 
         let Some(segment_number) = segment_number else {
             if self.segments.borrow().is_empty() {
@@ -174,8 +185,10 @@ impl Drop for Playlist {
 
 pub struct PlaylistManager {
     root_dir: PathBuf,
+    inotify: Rc<INotify>,
     // file_path -> playlist
     playlists: Rc<RefCell<FxHashMap<PathBuf, Rc<Playlist>>>>,
+    file_notify_map: Rc<RefCell<FxHashMap<PathBuf, Rc<Notify16>>>>,
 }
 
 impl PlaylistManager {
@@ -186,9 +199,12 @@ impl PlaylistManager {
     }
 
     fn playlist_path_to_file_path(playlist_path: &Path) -> Option<PathBuf> {
-        let is_playlist_file = playlist_path
-            .extension()
-            .is_some_and(|ext| ext == "m3u8" || ext == "m4s" || ext == "mp4");
+        let file_name = playlist_path.file_name()?.to_str()?;
+        let is_playlist_file = file_name == "playlist.m3u8"
+            || file_name == "_playlist.m3u8"
+            || file_name == "init.mp4"
+            || matches!(extract_segment_number(file_name), Ok(Some(_)));
+
         if !is_playlist_file {
             return None;
         }
@@ -201,14 +217,17 @@ impl PlaylistManager {
         Some(file_path)
     }
 
-    pub fn new(root_dir: PathBuf) -> Self {
+    pub async fn new(root_dir: PathBuf) -> Self {
+        let inotify = INotify::new_async().await.expect("Failed to create inotify instance");
+        let inotify = Rc::new(inotify);
+
         let playlists = Rc::new(RefCell::new(FxHashMap::default()));
 
-        let weak = Rc::downgrade(&playlists);
+        let playlists_weak = Rc::downgrade(&playlists);
         compio::runtime::spawn(async move {
             loop {
                 compio::time::sleep(Playlist::EXPIRES_AFTER / 2).await;
-                let Some(playlists) = weak.upgrade() else { break };
+                let Some(playlists) = playlists_weak.upgrade() else { break };
 
                 let now = Instant::now();
                 playlists
@@ -218,7 +237,55 @@ impl PlaylistManager {
         })
         .detach();
 
-        Self { root_dir, playlists }
+        let file_notify_map = Rc::new(RefCell::new(FxHashMap::default()));
+
+        let inotify_clone = inotify.clone();
+        let file_notify_map_weak = Rc::downgrade(&file_notify_map);
+        let playlists_weak = Rc::downgrade(&playlists);
+        compio::runtime::spawn(async move {
+            let visit = |event: inotify::Event<'_>| {
+                let is_dir = event.mask.contains(rustix::fs::inotify::ReadFlags::ISDIR);
+                let is_create = event.mask.contains(rustix::fs::inotify::ReadFlags::CREATE);
+                let is_move_to = event.mask.contains(rustix::fs::inotify::ReadFlags::MOVED_TO);
+
+                if is_dir || !(is_create || is_move_to) {
+                    return;
+                }
+
+                let Some(file_notify_map) = file_notify_map_weak.upgrade() else { return };
+
+                let Some(name) = event.name else { return };
+                let path = event.dir.join(name);
+
+                if let Some(name) = name.to_str()
+                    && let Ok(Some(segment_number)) = extract_segment_number(name)
+                    && let Some(file_path) = Self::playlist_path_to_file_path(&path)
+                    && let Some(playlists) = playlists_weak.upgrade()
+                    && let Some(playlist) = playlists.borrow().get(&file_path)
+                {
+                    playlist.segments.borrow_mut().insert(segment_number);
+                }
+
+                let notify: Option<Rc<Notify16>> = file_notify_map.borrow_mut().remove(&path);
+                if let Some(notify) = notify {
+                    notify.notify(usize::MAX);
+                }
+            };
+
+            loop {
+                if file_notify_map_weak.strong_count() == 0 {
+                    break;
+                }
+
+                inotify_clone
+                    .wait_async(visit)
+                    .await
+                    .expect("Failed to wait for inotify events");
+            }
+        })
+        .detach();
+
+        Self { root_dir, inotify, playlists, file_notify_map }
     }
 
     pub async fn get(&self, file_path: &Path) -> Result<PathBuf, std::io::Error> {
@@ -239,8 +306,24 @@ impl PlaylistManager {
         }
 
         let dir_name = Self::file_path_to_playlist_name(&file_path);
+        let output_dir = self.root_dir.join(dir_name);
 
-        let playlist = Playlist::new(self.root_dir.join(dir_name), file_path.clone()).await?;
+        match compio::fs::create_dir_all(&output_dir).await {
+            Ok(()) => (),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+            Err(error) => return Err(error),
+        }
+
+        self.inotify
+            .add_watch_async(
+                output_dir.clone(),
+                rustix::fs::inotify::WatchFlags::DELETE_SELF
+                    | rustix::fs::inotify::WatchFlags::CREATE
+                    | rustix::fs::inotify::WatchFlags::MOVE,
+            )
+            .await?;
+
+        let playlist = Playlist::new(output_dir, file_path.clone()).await?;
 
         let mut playlists = self.playlists.borrow_mut();
 
@@ -255,17 +338,12 @@ impl PlaylistManager {
     }
 
     pub fn close(&self, file_path: &Path) {
-        let mut playlist_to_close = None;
-
-        if let Some(playlist) = self.playlists.borrow_mut().remove(file_path) {
-            playlist_to_close = Some(playlist);
+        if self.playlists.borrow_mut().remove(file_path).is_some() {
+            return;
         }
 
-        if playlist_to_close.is_none()
-            && let Some(file_path) = Self::playlist_path_to_file_path(file_path)
-            && let Some(playlist) = self.playlists.borrow_mut().remove(&file_path)
-        {
-            playlist_to_close = Some(playlist);
+        if let Some(file_path) = Self::playlist_path_to_file_path(file_path) {
+            self.playlists.borrow_mut().remove(&file_path);
         }
     }
 
@@ -290,7 +368,7 @@ impl PlaylistManager {
         };
 
         playlist.expires_at.set(Instant::now() + Playlist::EXPIRES_AFTER);
-        playlist.pre_read(path.as_ref()).await?;
+        playlist.pre_read(path.as_ref(), &self.file_notify_map).await?;
 
         Ok(Some(path))
     }
@@ -301,19 +379,18 @@ async fn file_exists(path: &Path) -> bool {
     metadata.is_file() && metadata.len() > 0
 }
 
-async fn wait_for_file(path: &Path) -> Result<(), std::io::Error> {
-    let started_at = Instant::now();
-    loop {
-        if file_exists(path).await {
-            return Ok(());
+fn extract_segment_number(file_name: &str) -> Result<Option<u16>, std::io::Error> {
+    if let Some(("", rest)) = file_name.split_once("seg_")
+        && let Some((num, "")) = rest.rsplit_once(".m4s")
+    {
+        match num.parse::<u16>() {
+            Ok(num) => Ok(Some(num)),
+            Err(_) => {
+                Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid segment number"))
+            }
         }
-        if started_at.elapsed() > Duration::from_secs(10) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Timed out waiting for file",
-            ));
-        }
-        compio::time::sleep(Duration::from_millis(100)).await;
+    } else {
+        Ok(None)
     }
 }
 
