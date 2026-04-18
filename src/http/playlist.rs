@@ -1,10 +1,13 @@
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::hash::{Hash, Hasher};
+use std::ffi::OsString;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
+use base64::Engine;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::http::transcode::{create_vod_playlist, get_video_duration, spawn_transcode_hls};
 
@@ -19,17 +22,7 @@ struct Playlist {
 impl Playlist {
     const EXPIRES_AFTER: Duration = Duration::from_mins(30);
 
-    async fn new(mut output_dir: PathBuf, file_path: PathBuf) -> Result<Self, std::io::Error> {
-        {
-            let mut hasher = FxHasher::default();
-            file_path.hash(&mut hasher);
-            let hash = hasher.finish();
-
-            let mut name = file_path.file_name().unwrap().to_owned();
-            name.push(hash.to_string());
-            output_dir.push(name);
-        }
-
+    async fn new(output_dir: PathBuf, file_path: PathBuf) -> Result<Self, std::io::Error> {
         let create_future = compio::fs::create_dir(&output_dir);
         let duration_future = get_video_duration(&file_path);
 
@@ -181,11 +174,33 @@ impl Drop for Playlist {
 
 pub struct PlaylistManager {
     root_dir: PathBuf,
-    // output_dir -> playlist
+    // file_path -> playlist
     playlists: Rc<RefCell<FxHashMap<PathBuf, Rc<Playlist>>>>,
 }
 
 impl PlaylistManager {
+    fn file_path_to_playlist_name(file_path: &Path) -> String {
+        let bytes = file_path.as_os_str().as_bytes();
+        let bytes = smaz::compress(bytes);
+        base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(bytes)
+    }
+
+    fn playlist_path_to_file_path(playlist_path: &Path) -> Option<PathBuf> {
+        let is_playlist_file = playlist_path
+            .extension()
+            .is_some_and(|ext| ext == "m3u8" || ext == "m4s" || ext == "mp4");
+        if !is_playlist_file {
+            return None;
+        }
+
+        let parent_name = playlist_path.parent()?.file_name()?.to_str()?;
+        let bytes = base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(parent_name).ok()?;
+        let bytes = smaz::decompress(&bytes).ok()?;
+
+        let file_path = PathBuf::from(OsString::from_vec(bytes));
+        Some(file_path)
+    }
+
     pub fn new(root_dir: PathBuf) -> Self {
         let playlists = Rc::new(RefCell::new(FxHashMap::default()));
 
@@ -207,85 +222,87 @@ impl PlaylistManager {
     }
 
     pub async fn get(&self, file_path: &Path) -> Result<PathBuf, std::io::Error> {
-        if file_path.starts_with(&self.root_dir) {
-            let parent = file_path.parent().unwrap();
-            if let Some(playlist) = self.playlists.borrow_mut().get_mut(parent) {
-                playlist.expires_at.set(Instant::now() + Playlist::EXPIRES_AFTER);
-                return Ok(playlist.playlist_file());
-            }
-
-            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Playlist not found"));
-        }
-
-        if let Some(playlist) = self
-            .playlists
-            .borrow_mut()
-            .values_mut()
-            .find(|playlist| playlist.file_path == file_path)
-        {
+        if let Some(playlist) = self.playlists.borrow_mut().get_mut(file_path) {
             playlist.expires_at.set(Instant::now() + Playlist::EXPIRES_AFTER);
             return Ok(playlist.playlist_file());
         }
 
-        let playlist = Playlist::new(self.root_dir.clone(), file_path.to_owned()).await?;
+        let mut file_path = file_path.to_owned();
+
+        if let Some(path) = Self::playlist_path_to_file_path(&file_path) {
+            file_path = path;
+        }
+
+        if let Some(playlist) = self.playlists.borrow_mut().get_mut(&file_path) {
+            playlist.expires_at.set(Instant::now() + Playlist::EXPIRES_AFTER);
+            return Ok(playlist.playlist_file());
+        }
+
+        let dir_name = Self::file_path_to_playlist_name(&file_path);
+
+        let playlist = Playlist::new(self.root_dir.join(dir_name), file_path.clone()).await?;
 
         let mut playlists = self.playlists.borrow_mut();
 
-        if let Some(playlist) =
-            playlists.values_mut().find(|playlist| playlist.file_path == file_path)
-        {
+        if let Some(playlist) = playlists.get_mut(&file_path) {
             playlist.expires_at.set(Instant::now() + Playlist::EXPIRES_AFTER);
             return Ok(playlist.playlist_file());
         }
 
         let playlist_file = playlist.playlist_file();
-        playlists.insert(playlist.dir.clone(), Rc::new(playlist));
+        playlists.insert(file_path, Rc::new(playlist));
         Ok(playlist_file)
     }
 
     pub async fn close(&self, file_path: &Path) {
-        let close_playlist = async |mut playlist: Rc<Playlist>| {
-            let playlist = loop {
-                match Rc::try_unwrap(playlist) {
-                    Ok(playlist) => break playlist,
-                    Err(value) => playlist = value,
-                }
-                compio::time::sleep(Duration::from_millis(10)).await;
-            };
-            playlist.close().await;
+        let mut playlist_to_close = None;
+
+        if let Some(playlist) = self.playlists.borrow_mut().remove(file_path) {
+            playlist_to_close = Some(playlist);
+        }
+
+        if playlist_to_close.is_none()
+            && let Some(file_path) = Self::playlist_path_to_file_path(file_path)
+            && let Some(playlist) = self.playlists.borrow_mut().remove(&file_path)
+        {
+            playlist_to_close = Some(playlist);
+        }
+
+        let Some(mut playlist) = playlist_to_close else { return };
+        let playlist = loop {
+            match Rc::try_unwrap(playlist) {
+                Ok(playlist) => break playlist,
+                Err(value) => playlist = value,
+            }
+            compio::time::sleep(Duration::from_millis(10)).await;
+        };
+        playlist.close().await;
+    }
+
+    pub async fn contains_file(&self, path: &Path) -> bool {
+        self.get(path).await.is_ok()
+    }
+
+    /// Returns the path to use for access.
+    pub async fn pre_read<'p>(
+        &self,
+        path: &'p Path,
+    ) -> Result<Option<Cow<'p, Path>>, std::io::Error> {
+        let Some(file_path) = Self::playlist_path_to_file_path(path) else { return Ok(None) };
+        let Some(playlist) = self.playlists.borrow().get(&file_path).cloned() else {
+            return Ok(None);
         };
 
-        if file_path.starts_with(&self.root_dir) {
-            let parent = file_path.parent().unwrap();
-            let playlist = self.playlists.borrow_mut().remove(parent);
-            if let Some(playlist) = playlist {
-                close_playlist(playlist).await;
-            }
-            return;
-        }
+        let path = if path.parent() == Some(&playlist.dir) {
+            Cow::Borrowed(path)
+        } else {
+            Cow::Owned(playlist.dir.join(path.file_name().unwrap()))
+        };
 
-        if let Some(dir) = self.playlists.borrow().iter().find_map(|(dir, playlist)| {
-            if playlist.file_path == file_path { Some(dir.clone()) } else { None }
-        }) {
-            let playlist = self.playlists.borrow_mut().remove(&dir).unwrap();
-            close_playlist(playlist).await;
-        }
-    }
-
-    pub fn contains_file(&self, path: &Path) -> bool {
-        let Some(parent) = path.parent() else { return false };
-        if let Some(playlist) = self.playlists.borrow_mut().get_mut(parent) {
-            playlist.expires_at.set(Instant::now() + Playlist::EXPIRES_AFTER);
-            return true;
-        }
-        false
-    }
-
-    pub async fn pre_read(&self, path: &Path) -> Result<(), std::io::Error> {
-        let Some(parent) = path.parent() else { return Ok(()) };
-        let Some(playlist) = self.playlists.borrow().get(parent).cloned() else { return Ok(()) };
         playlist.expires_at.set(Instant::now() + Playlist::EXPIRES_AFTER);
-        playlist.pre_read(path).await
+        playlist.pre_read(path.as_ref()).await?;
+
+        Ok(Some(path))
     }
 }
 

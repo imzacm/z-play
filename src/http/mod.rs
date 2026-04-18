@@ -341,7 +341,13 @@ async fn validate_path_middleware(request: Request, next: Next) -> Result<Respon
     let decoded_path = urlencoding::decode(path_query).map_err(|_| StatusCode::BAD_REQUEST)?;
     let requested_path = Path::new(decoded_path.as_ref());
 
-    let is_hls_playlist = PLAYLISTS.get().unwrap().contains_file(&requested_path);
+    let path_clone = requested_path.to_owned();
+    let is_hls_playlist =
+        compio::runtime::spawn(
+            async move { PLAYLISTS.get().unwrap().contains_file(&path_clone).await },
+        )
+        .await
+        .unwrap();
 
     let is_valid = is_hls_playlist || {
         let queue = QUEUE.get().unwrap();
@@ -891,7 +897,7 @@ where
             break;
         }
 
-        size -= bytes.len() as u64;
+        size = size.saturating_sub(bytes.len() as u64);
         offset += bytes.len() as u64;
     }
     Ok(())

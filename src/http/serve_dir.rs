@@ -14,15 +14,26 @@ pub async fn serve_dir(
     Path(path): Path<String>,
     request: axum::extract::Request,
 ) -> impl IntoResponse {
-    let path = Utf8Path::new("/").join(path);
+    let mut path = Utf8Path::new("/").join(path);
 
     let path_clone = path.to_owned();
-    compio::runtime::spawn(async move {
+    let mapped_path = compio::runtime::spawn(async move {
         let hls_map = super::PLAYLISTS.get().unwrap();
-        _ = hls_map.pre_read(path_clone.as_ref()).await;
+        match hls_map.pre_read(path_clone.as_ref()).await {
+            Ok(Some(path)) => Some(path.into_owned()),
+            Ok(None) => None,
+            Err(error) => {
+                eprintln!("Error pre-reading file: {error}");
+                None
+            }
+        }
     })
     .await
     .unwrap();
+
+    if let Some(mapped_path) = &mapped_path {
+        path = Utf8Path::from_path(mapped_path).unwrap().to_path_buf();
+    };
 
     let is_hls_playlist = path.file_name().is_some_and(|name| name.ends_with(".m3u8"));
 

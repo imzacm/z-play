@@ -4475,6 +4475,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
+name = "smaz"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f9ecc6775a24d971affc5b0e8549207ff53cf80eb661592165d67e0170a1fb0"
+dependencies = [
+ "lazy_static",
+]
+
+[[package]]
 name = "smithay-client-toolkit"
 version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6365,6 +6374,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "axum-extra",
+ "base64",
  "camino",
  "compio",
  "cyper",
@@ -6392,6 +6402,7 @@ dependencies = [
  "scopeguard",
  "serde",
  "serde_json",
+ "smaz",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

@@ -71,6 +71,9 @@ tempfile = { version = "3", optional = true }
 scopeguard = "1.2"
 memchr = "2.8"
 
+smaz = "0.1"
+base64 = "0.22"
+
 [dependencies.z-queue]
 git = "https://github.com/imzacm/z-queue.git"
 rev = "c8a5b799701a414b5e29b15e3603a7871dd56167"
