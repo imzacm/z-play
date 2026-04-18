@@ -43,7 +43,7 @@ impl FileCache {
         let weak = Rc::downgrade(&inner);
         compio::runtime::spawn(async move {
             loop {
-                compio::time::sleep(Duration::from_secs(1)).await;
+                compio::time::sleep(Duration::from_secs(30)).await;
                 let Some(inner) = weak.upgrade() else { break };
                 let now = Instant::now();
                 inner.files.borrow_mut().retain(|_, file| *file.expires_at.borrow() > now);
@@ -124,7 +124,7 @@ pub struct CachedFile {
 impl CachedFile {
     // 4 MiB
     pub const CHUNK_SIZE: u64 = 4 * 1024 * 1024;
-    const EXPIRES_AFTER: Duration = Duration::from_secs(60);
+    const EXPIRES_AFTER: Duration = Duration::from_mins(5);
 
     async fn open<P>(path: P, file_cache: Rc<FileCacheInner>) -> Result<Self, std::io::Error>
     where

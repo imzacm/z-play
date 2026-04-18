@@ -38,7 +38,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(feature = "http")]
     if let Some(port) = http_port {
-        http::start_server(port, root_dirs);
+        let hls_dir = std::env::var_os("Z_PLAY_HLS_DIR").map(PathBuf::from);
+        let mut _temp_dir = None;
+
+        let hls_dir = if let Some(hls_dir) = hls_dir {
+            hls_dir
+        } else {
+            let dir = tempfile::tempdir()?;
+            _temp_dir = Some(dir);
+            _temp_dir.as_ref().unwrap().path().to_owned()
+        };
+
+        http::start_server(port, root_dirs, hls_dir);
         return Ok(());
     }
 

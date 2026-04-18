@@ -13,7 +13,7 @@ debug = 0
 [features]
 default = ["app", "http"]
 app = ["dep:glib", "dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:eframe", "dep:rfd", "dep:keepawake"]
-http = ["dep:compio", "dep:cyper-axum", "dep:tower", "dep:axum", "dep:axum-extra", "dep:urlencoding", "dep:serde", "dep:serde_json", "dep:mime_guess", "dep:lru", "dep:camino", "dep:http"]
+http = ["dep:compio", "dep:cyper-axum", "dep:tower", "dep:axum", "dep:axum-extra", "dep:urlencoding", "dep:serde", "dep:serde_json", "dep:mime_guess", "dep:lru", "dep:camino", "dep:http", "dep:nvml-wrapper", "dep:tempfile"]
 immich = ["dep:serde", "dep:cyper", "dep:http", "dep:camino", "parking_lot/send_guard"]
 
 [dependencies]
@@ -38,7 +38,7 @@ rfd = { version = "0.17", optional = true }
 keepawake = { version = "0.6", optional = true }
 
 # HTTP Server
-compio = { version = "0.18", optional = true, features = ["fs", "time", "bytes"] }
+compio = { version = "0.18", optional = true, features = ["fs", "time", "bytes", "process"] }
 cyper-axum = { version = "0.8", optional = true, features = ["http2"] }
 
 tower = { version = "0.5", optional = true }
@@ -64,7 +64,14 @@ triomphe = "0.1"
 
 z-sync = { git = "https://github.com/imzacm/z-sync.git", rev = "197951fd4abca00ebcb7fcd8a9a6cdab90010cc6" }
 
+nvml-wrapper = { version = "0.12", optional = true }
+
+tempfile = { version = "3", optional = true }
+
+scopeguard = "1.2"
+memchr = "2.8"
+
 [dependencies.z-queue]
 git = "https://github.com/imzacm/z-queue.git"
-rev = "a3fa01f6263765f3f644b2d3faeadb6dff967e3d"
+rev = "c8a5b799701a414b5e29b15e3603a7871dd56167"
 features = ["map", "triomphe", "rand", "crossbeam-queue", "stream"]

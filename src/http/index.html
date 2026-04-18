@@ -319,6 +319,8 @@
         }
     </style>
 
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.16/dist/hls.min.js"></script>
+
     <script>
         const settingsManager = {
             fields: [
@@ -717,6 +719,12 @@
                 setLoading(true);
                 removeEventListeners();
 
+                const activeSrc = root.hlsInstance?.url || active?.src
+                if (activeSrc) {
+                    const url = activeSrc.replace('/files/', '/close/')
+                    fetch(url, {method: 'POST'}).catch(error => console.error('Error closing file:', error));
+                }
+
                 let response;
                 if (next) {
                     if (history.length === 0 || historyIndex === history.length - 1) {
@@ -799,9 +807,132 @@
                     };
                 }
 
-                active.src = path.startsWith('/') ? `files${path}` : `files/${path}`;
-                loading = false;
-            };
+                const src = path.startsWith('/') ? `files${path}` : `files/${path}`;
+
+                if (root.hlsInstance) {
+                    root.hlsInstance.destroy()
+                    root.hlsInstance = null
+                }
+
+                if (src.endsWith('.m3u8')) {
+                    active.loop = false
+                    active.autoplay = false
+
+                    if (Hls.isSupported()) {
+                        const hls = new Hls({
+                            // Try to keep 60 seconds buffered ahead
+                            maxBufferLength: 60,
+                            // Allow up to 10 minutes to sit in RAM if needed
+                            maxMaxBufferLength: 600
+                        })
+                        hls.loadSource(src)
+                        hls.attachMedia(active)
+                        root.hlsInstance = hls
+
+                        let hasStarted = false
+                        // Array to track moving average of speed
+                        const speedRatios = []
+
+                        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                            console.log('Playlist loaded')
+                        })
+
+                        // Measure the speed of every incoming segment
+                        hls.on(Hls.Events.FRAG_LOADED, (event, data) => {
+                            // Ignore the init segment which is tiny
+                            if (data.frag.sn === 'initSegment') {
+                                return
+                            }
+
+                            // data.frag.duration is the length of the video chunk (usually ~2s)
+                            //
+                            // stats.loading gives us the exact network transfer time in ms
+                            const stats = data.stats || data.frag.stats
+                            const downloadTimeSeconds = (stats.loading.end - stats.loading.start) / 1000
+
+                            // Ignore instant cached loads (which would divide by zero or heavily impact ratio)
+                            if (downloadTimeSeconds > 0.3) {
+                                const currentRatio = data.frag.duration / downloadTimeSeconds
+                                speedRatios.push(currentRatio)
+
+                                // Keep a moving average of the last 5 segments to smooth out network jitter
+                                if (speedRatios.length > 5) {
+                                    speedRatios.shift()
+                                }
+                            }
+                        })
+
+                        // Evaluate if we have enough buffer to start
+                        hls.on(Hls.Events.FRAG_BUFFERED, (event, data) => {
+                            if (hasStarted) {
+                                return
+                            }
+
+                            const bufferedAmount = active.buffered.length > 0 ? active.buffered.end(0) : 0
+                            const duration = active.duration || 999
+                            const remainingDuration = duration - bufferedAmount
+
+                            // Calculate the moving average
+                            let avgRatio = 1.0
+                            if (speedRatios.length > 0) {
+                                avgRatio = speedRatios.reduce((a, b) => a + b) / speedRatios.length
+                            }
+
+                            let targetBuffer = 6.0
+                            if (speedRatios.length > 1) {
+                                if (avgRatio > 1.1) {
+                                    // Processing faster than real-time.
+                                    // A minimal 2-second buffer easily absorbs minor network hiccups.
+                                    targetBuffer = 2.0
+                                } else if (avgRatio > 0.1) {
+                                    // Processing slower than real-time. Calculate the exact head-start needed.
+                                    // Adding a 15% safety margin (* 1.15) to guarantee uninterrupted playback.
+                                    targetBuffer = (remainingDuration * (1.0 - avgRatio)) * 1.15
+                                }
+                            }
+
+                            targetBuffer = Math.min(targetBuffer, 60.0)
+
+                            const isFullyBuffered = bufferedAmount >= duration - 0.5
+
+                            console.log(`[Buffer] Speed: ${avgRatio.toFixed(2)}x | Target: ${targetBuffer.toFixed(1)}s | Buffered: ${bufferedAmount.toFixed(1)}s`)
+                            if (bufferedAmount >= targetBuffer || isFullyBuffered) {
+                                hasStarted = true
+                                active.play().catch(error => console.error("Playback failed:", error))
+                            }
+                        })
+
+                        hls.on(Hls.Events.ERROR, (event, data) => {
+                            console.error('HLS Error:', data)
+
+                            if (data.fatal) {
+                                switch (data.type) {
+                                    case Hls.ErrorTypes.NETWORK_ERROR:
+                                        console.log("Fatal network error encountered, trying to recover...")
+                                        hls.startLoad()
+                                        break
+                                    case Hls.ErrorTypes.MEDIA_ERROR:
+                                    case Hls.ErrorTypes.MUX_ERROR:
+                                        console.log("Fatal media error encountered, flushing buffer and recovering...")
+                                        hls.recoverMediaError()
+                                        break
+                                    default:
+                                        // Unrecoverable error
+                                        hls.destroy()
+                                        break
+                                }
+                            }
+                        })
+                    } else if (active.canPlayType('application/vnd.apple.mpegurl')) {
+                        active.src = src
+                        active.addEventListener('loadedmetadata', () => active.play())
+                    }
+                } else {
+                    active.src = src
+                }
+
+                loading = false
+            }
 
             const prevFile = () => loadFile(false);
             const nextFile = () => loadFile(true);

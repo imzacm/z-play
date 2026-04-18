@@ -1,9 +1,11 @@
 mod file_cache;
+mod playlist;
 mod queue;
 mod serve_dir;
+mod transcode;
 
 use std::borrow::Cow;
-use std::cell::LazyCell;
+use std::cell::{LazyCell, OnceCell};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
@@ -19,22 +21,22 @@ use axum::http::{HeaderName, StatusCode};
 use axum::middleware::Next;
 use axum::response::sse::Event;
 use axum::response::{Html, IntoResponse, Json, Response, Sse};
-use axum::routing::{get, patch};
+use axum::routing::{get, patch, post};
 use axum::{Router, middleware};
 use axum_extra::extract::Query;
 use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::Stream;
+use rand::RngExt;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use triomphe::Arc;
 use z_play::inotify::{self, INotify};
-use z_play::random_files;
 #[cfg(feature = "immich")]
 use z_play::random_files_immich::{self, ImmichClient};
 use z_play::walkdir::walk_roots_filter;
 
-use self::queue::Queue;
-use crate::http::queue::QueueStats;
+use self::queue::{Queue, QueueStats};
+use self::transcode::should_transcode;
 
 const QUEUE_COUNT_HEADER: HeaderName = HeaderName::from_static("x-queue-count");
 const QUEUE_SIZE_HEADER: HeaderName = HeaderName::from_static("x-queue-size");
@@ -50,13 +52,16 @@ const FILE_CACHE_LIMIT: usize = 5 * 1024 * 1024 * 1024;
 static FILE_CACHE: LazyCell<file_cache::FileCache> =
     LazyCell::new(|| file_cache::FileCache::new(FILE_CACHE_LIMIT));
 
-pub fn start_server(port: u16, roots: Vec<PathBuf>) {
+#[thread_local]
+static PLAYLISTS: OnceCell<playlist::PlaylistManager> = OnceCell::new();
+
+pub fn start_server(port: u16, roots: Vec<PathBuf>, hls_dir: PathBuf) {
     compio::runtime::Runtime::new().unwrap().block_on(async {
-        start_server_inner(port, roots).await;
+        start_server_inner(port, roots, hls_dir).await;
     });
 }
 
-async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
+async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>, hls_dir: PathBuf) {
     let app = Router::new()
         .route("/", get(root_handler))
         .route("/roots", get(get_roots))
@@ -66,6 +71,7 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
         .route("/reset", get(reset_queue_handler))
         .route("/shuffle", get(shuffle_queue_handler))
         .route("/sse", get(sse_handler))
+        .route("/close/{*path}", post(close_file))
         .nest(
             "/files",
             Router::new()
@@ -86,12 +92,20 @@ async fn start_server_inner(port: u16, mut roots: Vec<PathBuf>) {
     });
     roots.shrink_to_fit();
 
-    let queue = QUEUE.get_or_init(move || Queue::new(roots));
+    QUEUE.get_or_init(move || Queue::new(roots));
+
+    PLAYLISTS.get_or_init(move || playlist::PlaylistManager::new(hls_dir));
 
     #[cfg(feature = "immich")]
-    compio::runtime::spawn(immich_queue_feeder(queue)).detach();
+    std::thread::spawn(|| {
+        let queue = QUEUE.get().unwrap();
+        compio::runtime::Runtime::new().unwrap().block_on(immich_queue_feeder(queue));
+    });
 
-    compio::runtime::spawn(queue_feeder(queue, None)).detach();
+    std::thread::spawn(|| {
+        let queue = QUEUE.get().unwrap();
+        compio::runtime::Runtime::new().unwrap().block_on(queue_feeder(queue, None));
+    });
 
     std::thread::spawn(|| directory_counts());
 
@@ -139,9 +153,8 @@ impl FileKind {
             "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "svg" | "avif" | "ico" | "apng" => {
                 Some(Self::Image)
             }
-            "mp4" | "mkv" | "webm" | "avi" | "mov" | "wmv" | "flv" | "mpeg" | "ogv" => {
-                Some(Self::Video)
-            }
+            "mp4" | "mkv" | "webm" | "avi" | "mov" | "qt" | "wmv" | "flv" | "mpeg" | "mpg"
+            | "ogv" | "ts" | "m2ts" | "vob" | "3gp" | "rmvb" => Some(Self::Video),
             "mp3" | "wav" | "ogg" | "m4a" | "flac" | "aac" | "mpga" | "opus" | "weba" | "oga" => {
                 Some(Self::Audio)
             }
@@ -222,6 +235,7 @@ struct PathResponse {
     kind: FileKind,
 }
 
+#[axum::debug_handler]
 async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
     let RandomQuery { kinds, roots } = query.0;
 
@@ -234,9 +248,41 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
 
         let path = Utf8PathBuf::from_path_buf(path).expect("Only UTF-8 paths are supported");
 
-        let path_clone = path.clone();
-        compio::runtime::spawn(precache_file(path_clone)).detach();
-        break (path, file_kind);
+        // No point pre-caching if we're going to transcode.
+        let should_transcode =
+            compio::runtime::spawn(should_transcode(path.clone())).await.unwrap();
+        if should_transcode {
+            let path_clone = path.clone();
+            let playlist = compio::runtime::spawn(async move {
+                PLAYLISTS.get().unwrap().get(path_clone.as_ref()).await
+            })
+            .await
+            .unwrap();
+
+            match playlist {
+                // Gifs are transcoded to video.
+                Ok(playlist) => {
+                    let playlist = Utf8PathBuf::from_path_buf(playlist).unwrap();
+                    break (playlist, FileKind::Video);
+                }
+                Err(error) => {
+                    println!("Failed to get playlist for {path}: {error}");
+                }
+            }
+        }
+
+        let future = compio::time::timeout(Duration::from_secs(1), precache_file(path.clone()));
+        // The future isn't Send unless we spawn this, and axum was designed for tokio.
+        let result = compio::runtime::spawn(future).await.unwrap();
+        match result {
+            Ok(Ok(_)) => break (path, file_kind),
+            Ok(Err(_)) => continue,
+            Err(_) => {
+                // Timeout.
+                compio::runtime::spawn(queue.push_async(path.into())).detach();
+                continue;
+            }
+        }
     };
 
     (
@@ -270,7 +316,7 @@ async fn reset_queue_handler() -> impl IntoResponse {
     let queue = QUEUE.get().unwrap();
 
     queue.reset().await;
-    compio::runtime::spawn(queue_feeder(queue, Some(1))).detach();
+    DIR_COUNTS.notify.notify(usize::MAX);
     StatusCode::NO_CONTENT
 }
 
@@ -281,12 +327,23 @@ async fn shuffle_queue_handler() -> impl IntoResponse {
     StatusCode::NO_CONTENT
 }
 
+async fn close_file(axum::extract::Path(path): axum::extract::Path<String>) -> impl IntoResponse {
+    let path = Utf8Path::new("/").join(path);
+    FILE_CACHE.close(&path);
+    _ = compio::runtime::spawn(async move { PLAYLISTS.get().unwrap().close(path.as_ref()).await })
+        .await
+        .unwrap();
+    StatusCode::NO_CONTENT
+}
+
 async fn validate_path_middleware(request: Request, next: Next) -> Result<Response, StatusCode> {
     let path_query = request.uri().path();
     let decoded_path = urlencoding::decode(path_query).map_err(|_| StatusCode::BAD_REQUEST)?;
     let requested_path = Path::new(decoded_path.as_ref());
 
-    let is_valid = {
+    let is_hls_playlist = PLAYLISTS.get().unwrap().contains_file(&requested_path);
+
+    let is_valid = is_hls_playlist || {
         let queue = QUEUE.get().unwrap();
         let roots = queue.enabled_roots().read_async().await;
         roots.iter().any(|root| requested_path.starts_with(root))
@@ -447,85 +504,131 @@ async fn immich_queue_feeder(queue: &Queue) {
 }
 
 async fn queue_feeder(queue: &Queue, max_count: Option<usize>) {
-    fn filter(path: &Path, is_dir: bool) -> bool {
+    println!("Starting streaming cyclic queue feeder");
+
+    let mut counter = 0;
+
+    let mut video_pool: Vec<PathBuf> = Vec::new();
+    let mut image_pool: Vec<PathBuf> = Vec::new();
+    let mut audio_pool: Vec<PathBuf> = Vec::new();
+
+    // Hold the active receiver so we can stream paths live
+    let mut current_walk_rx: Option<z_play::walkdir::PathReceiver> = None;
+    let mut rng = rand::rng();
+
+    let filter = |path: &Path, is_dir: bool| {
         if is_dir {
             return true;
         }
-        filter_path(path)
-    }
+        FileKind::from_path(path).is_some()
+    };
 
-    println!("Starting queue feeder");
-    let mut counter = 0;
     'main: loop {
-        let queue_len = queue.len();
-        // Start at 100ms and scale up to 10s based on queue length.
-        let mut timeout_ms = 100 + (9900 * queue_len / Queue::MAX_QUEUE_SIZE);
+        let stats = queue.stats();
+        let total_counts = DIR_COUNTS.total_counts.read();
 
-        let path = loop {
-            let pop_listener = queue.observe_pop();
-            let dir_count_listener = DIR_COUNTS.notify.listener();
-            {
-                let total_counts = DIR_COUNTS.total_counts.read();
-                let queue_counts = queue.stats();
-                if (queue_counts.video_count == Queue::QUEUE_SIZE
-                    || queue_counts.video_count == total_counts.video_count)
-                    && (queue_counts.image_count == Queue::QUEUE_SIZE
-                        || queue_counts.image_count == total_counts.image_count)
-                    && (queue_counts.audio_count == Queue::QUEUE_SIZE
-                        || queue_counts.audio_count == total_counts.audio_count)
-                {
-                    println!("Queue contains all available files, waiting for pop or new files");
-                    tokio::select! {
-                        _ = pop_listener => (),
-                        _ = dir_count_listener => (),
-                    }
-                }
+        let need_videos =
+            stats.video_count < Queue::QUEUE_SIZE && stats.video_count < total_counts.video_count;
+        let need_images =
+            stats.image_count < Queue::QUEUE_SIZE && stats.image_count < total_counts.image_count;
+        let need_audios =
+            stats.audio_count < Queue::QUEUE_SIZE && stats.audio_count < total_counts.audio_count;
+
+        // 1. Sleep if the queue is perfectly full
+        if !need_videos && !need_images && !need_audios {
+            tokio::select! {
+                _ = queue.observe_pop() => (),
+                _ = DIR_COUNTS.notify.listener() => (),
             }
+            continue 'main;
+        }
 
-            if queue.len() == Queue::MAX_QUEUE_SIZE {
-                let listener = queue.observe_pop();
-                if queue.len() == Queue::MAX_QUEUE_SIZE {
-                    println!("Queue is full, waiting for pop");
-                    listener.await;
-                    continue 'main;
-                }
-            }
-
+        // 2. Start a new background walk if we don't have one and any pool is empty
+        if current_walk_rx.is_none()
+            && (video_pool.is_empty() || image_pool.is_empty() || audio_pool.is_empty())
+        {
             let mut roots = queue.enabled_roots().read_async().await.clone();
-            if roots.is_empty() {
-                println!("No enabled roots, sleeping for 1s");
-                compio::time::sleep(Duration::from_secs(1)).await;
+            if !roots.is_empty() {
+                use rand::seq::SliceRandom;
+                roots.shuffle(&mut rng);
+                if let Ok(rx) = walk_roots_filter(&roots, None, filter).await {
+                    current_walk_rx = Some(rx);
+                }
+            } else {
+                compio::time::sleep(std::time::Duration::from_secs(1)).await;
                 continue 'main;
             }
+        }
 
-            {
-                use rand::seq::SliceRandom;
-
-                let mut rng = rand::rng();
-                roots.shuffle(&mut rng);
-            }
-
-            let timeout = Duration::from_millis(timeout_ms as u64);
-            let path = random_files::random_file_with_timeout_filter(&roots, timeout, filter).await;
-
-            match path {
-                Some(path) => break path,
-                None => {
-                    timeout_ms += 1000;
-                    println!("No files found, increasing timeout to {timeout_ms}ms");
-                    if queue.len() > 1 {
-                        compio::time::sleep(Duration::from_millis(100)).await;
-                    }
+        // 3. Drain any immediately available paths from the active walk into our pools
+        //    (Non-blocking)
+        if let Some(rx) = &current_walk_rx {
+            while let Ok(Some(path)) = rx.try_recv() {
+                match FileKind::from_path(&path) {
+                    Some(FileKind::Video) => video_pool.push(path),
+                    Some(FileKind::Image) => image_pool.push(path),
+                    Some(FileKind::Audio) => audio_pool.push(path),
+                    None => {}
                 }
             }
+        }
+
+        let mut pushed = false;
+
+        // Helper to pop a random, unqueued file from a pool.
+        // swap_remove is O(1) and prevents shifting massive vectors.
+        let mut try_push_random = |pool: &mut Vec<PathBuf>| -> Option<PathBuf> {
+            while !pool.is_empty() {
+                let index = rng.random_range(0..pool.len());
+                let path = pool.swap_remove(index);
+                if !queue.contains_path(&path) {
+                    return Some(path);
+                }
+            }
+            None
         };
 
-        queue.push_async(path).await;
-
-        if max_count.is_some_and(|v| counter >= v) {
-            break;
+        // 4. Safely push to the queues
+        if need_videos && let Some(path) = try_push_random(&mut video_pool) {
+            queue.push_async(path).await;
+            pushed = true;
+        } else if need_images && let Some(path) = try_push_random(&mut image_pool) {
+            queue.push_async(path).await;
+            pushed = true;
+        } else if need_audios && let Some(path) = try_push_random(&mut audio_pool) {
+            queue.push_async(path).await;
+            pushed = true;
         }
-        counter += 1;
+
+        // 5. Flow control
+        if pushed {
+            if let Some(limit) = max_count
+                && counter >= limit
+            {
+                break 'main;
+            }
+            counter += 1;
+            yield_now().await;
+            continue 'main;
+        }
+
+        // 6. Starvation state
+        // If we couldn't push anything, our needed pools are completely empty.
+        // We MUST block until the background walk yields at least one new file.
+        if let Some(rx) = &current_walk_rx {
+            match rx.recv_async().await {
+                Ok(path) => match FileKind::from_path(&path) {
+                    Some(FileKind::Video) => video_pool.push(path),
+                    Some(FileKind::Image) => image_pool.push(path),
+                    Some(FileKind::Audio) => audio_pool.push(path),
+                    None => {}
+                },
+                Err(_) => current_walk_rx = None, // Channel closed, walk finished
+            }
+        } else {
+            // Failsafe yield to prevent 100% CPU loops if something gets out of sync
+            yield_now().await;
+        }
     }
 }
 
@@ -779,7 +882,7 @@ where
     println!("Pre-caching file: {path}");
 
     let file = FILE_CACHE.open(path.as_ref()).await?;
-    let mut size = file.size();
+    let mut size = if file.size() == 0 { 0 } else { file.size() / 2 };
     let mut offset = 0;
     while size > 0 {
         let bytes = file.read_at(offset, file_cache::CachedFile::CHUNK_SIZE as usize).await?;

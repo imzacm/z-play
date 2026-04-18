@@ -877,6 +877,7 @@ dependencies = [
  "compio-io",
  "compio-log",
  "compio-net",
+ "compio-process",
  "compio-quic",
  "compio-runtime",
  "compio-tls",
@@ -978,6 +979,21 @@ dependencies = [
  "once_cell",
  "socket2",
  "widestring",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "compio-process"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c50eeca88d4af096c9986d71c52038a234c9b4d9ee22b4724a9680e7b7fd1d0"
+dependencies = [
+ "cfg-if",
+ "compio-buf",
+ "compio-driver",
+ "compio-io",
+ "compio-runtime",
+ "futures-util",
  "windows-sys 0.61.2",
 ]
 
@@ -3171,6 +3187,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvml-wrapper"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f049ae562349fefb8e837eb15443da1e7c6dcbd8a11f52a228f92220c2e5c85e"
+dependencies = [
+ "bitflags 2.11.1",
+ "libloading",
+ "nvml-wrapper-sys",
+ "static_assertions",
+ "thiserror 1.0.69",
+ "wrapcenum-derive",
+]
+
+[[package]]
+name = "nvml-wrapper-sys"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b4d594420fcda43b1c2c4bd44d48974aa3c7a9ab2cbf10dc18e35265767bf0b"
+dependencies = [
+ "libloading",
+]
+
+[[package]]
 name = "objc"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5148,11 +5187,11 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "wasip2"
-version = "1.0.2+wasi-0.2.9"
+version = "1.0.3+wasi-0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9517f9239f02c069db75e65f174b3da828fe5f5b945c4dd26bd25d89c03ebcf5"
+checksum = "20064672db26d7cdc89c7798c48a0fdfac8213434a1186e5ef29fd560ae223d6"
 dependencies = [
- "wit-bindgen",
+ "wit-bindgen 0.57.1",
 ]
 
 [[package]]
@@ -5161,7 +5200,7 @@ version = "0.4.0+wasi-0.3.0-rc-2026-01-06"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5428f8bf88ea5ddc08faddef2ac4a67e390b88186c703ce6dbd955e1c145aca5"
 dependencies = [
- "wit-bindgen",
+ "wit-bindgen 0.51.0",
 ]
 
 [[package]]
@@ -6126,6 +6165,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "wit-bindgen"
+version = "0.57.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
 name = "wit-bindgen-core"
 version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6202,6 +6247,18 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "wrapcenum-derive"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a76ff259533532054cfbaefb115c613203c73707017459206380f03b3b3f266e"
+dependencies = [
+ "darling",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -6324,14 +6381,18 @@ dependencies = [
  "keepawake",
  "log",
  "lru",
+ "memchr",
  "mime_guess",
+ "nvml-wrapper",
  "parking_lot",
  "rand 0.10.1",
  "rfd",
  "rustc-hash 2.1.2",
  "rustix 1.1.4",
+ "scopeguard",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tower",
@@ -6344,7 +6405,7 @@ dependencies = [
 [[package]]
 name = "z-queue"
 version = "0.1.0"
-source = "git+https://github.com/imzacm/z-queue.git?rev=a3fa01f6263765f3f644b2d3faeadb6dff967e3d#a3fa01f6263765f3f644b2d3faeadb6dff967e3d"
+source = "git+https://github.com/imzacm/z-queue.git?rev=c8a5b799701a414b5e29b15e3603a7871dd56167#c8a5b799701a414b5e29b15e3603a7871dd56167"
 dependencies = [
  "arc-swap",
  "crossbeam-queue",

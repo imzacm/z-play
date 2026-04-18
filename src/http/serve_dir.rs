@@ -14,17 +14,34 @@ pub async fn serve_dir(
     Path(path): Path<String>,
     request: axum::extract::Request,
 ) -> impl IntoResponse {
-    let (result_tx, result_rx) = z_queue::defaults::bounded(NonZeroUsize::MIN);
     let path = Utf8Path::new("/").join(path);
 
-    let path_clone = path.clone();
+    let path_clone = path.to_owned();
     compio::runtime::spawn(async move {
-        let result = FILE_CACHE.open(path_clone).await.map(|file| file.size());
-        _ = result_tx.send_async(result).await;
+        let hls_map = super::PLAYLISTS.get().unwrap();
+        _ = hls_map.pre_read(path_clone.as_ref()).await;
     })
-    .detach();
+    .await
+    .unwrap();
 
-    let file_size = match result_rx.recv_async().await.unwrap() {
+    let is_hls_playlist = path.file_name().is_some_and(|name| name.ends_with(".m3u8"));
+
+    let mut _guard = None;
+    if is_hls_playlist {
+        _guard = Some(scopeguard::guard(path.clone(), move |path| {
+            FILE_CACHE.close(path);
+        }));
+    }
+
+    let path_clone = path.clone();
+    let file_size_result =
+        compio::runtime::spawn(
+            async move { FILE_CACHE.open(path_clone).await.map(|file| file.size()) },
+        )
+        .await
+        .unwrap();
+
+    let file_size = match file_size_result {
         Ok(size) => size,
         Err(error) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("IO Error: {error:?}"))
@@ -76,7 +93,7 @@ pub async fn serve_dir(
     let chunk_size = end - start + 1;
     let mime = mime_guess::from_path(&path).first_or_octet_stream();
 
-    let (tx, rx) = z_queue::defaults::bounded(NonZeroUsize::MIN);
+    let (tx, rx) = z_queue::defaults::bounded(NonZeroUsize::new(16).unwrap());
 
     compio::runtime::spawn(async move {
         let file = FILE_CACHE.open(path).await.expect("Failed to open file");
@@ -108,6 +125,15 @@ pub async fn serve_dir(
                 }
             }
         }
+
+        drop(tx);
+
+        // Cache the rest of the file.
+        while current_offset < file_size {
+            if file.read_at(current_offset, buffer_size).await.is_err() {
+                break;
+            }
+        }
     })
     .detach();
 
@@ -115,8 +141,13 @@ pub async fn serve_dir(
     let mut response = Response::builder()
         .header(header::CONTENT_TYPE, mime.as_ref())
         .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::CONNECTION, "keep-alive")
-        .header(header::CACHE_CONTROL, "public, max-age=31536000");
+        .header(header::CONNECTION, "keep-alive");
+
+    if is_hls_playlist {
+        response = response.header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate");
+    } else {
+        response = response.header(header::CACHE_CONTROL, "public, max-age=31536000");
+    }
 
     // If it's a range request, we MUST return a 206 Partial Content status
     if is_range {
