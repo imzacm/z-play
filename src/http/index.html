@@ -748,12 +748,13 @@
                     response = history[historyIndex];
                 }
 
-                const path = response.path;
-                const fileKind = response.kind;
+                const path = response.path
+                const displayPath = response.display_path || path
+                const fileKind = response.kind
 
-                loopCount = 0;
-                loopCountText.innerText = loopCount.toString();
-                loopInfo.style.display = document.querySelector('.opt-loop').checked ? 'inline' : 'none';
+                loopCount = 0
+                loopCountText.innerText = loopCount.toString()
+                loopInfo.style.display = document.querySelector('.opt-loop').checked ? 'inline' : 'none'
 
                 stop();
 
@@ -776,8 +777,8 @@
                         return;
                 }
 
-                playingText.innerText = path;
-                adjustTextScale();
+                playingText.innerText = displayPath
+                adjustTextScale()
 
                 active.onerror = event => {
                     console.error('Error playing ' + playingText.innerText, event);

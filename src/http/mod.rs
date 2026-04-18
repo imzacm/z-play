@@ -232,6 +232,8 @@ async fn patch_roots(body: Json<Vec<RootJson>>) -> impl IntoResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PathResponse {
     path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_path: Option<String>,
     kind: FileKind,
 }
 
@@ -241,7 +243,7 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
 
     let queue = QUEUE.get().unwrap();
 
-    let (path, file_kind) = loop {
+    let (path, display_path, file_kind) = loop {
         let filter_kinds = if kinds.is_empty() { None } else { Some(&kinds) };
         let filter_roots = if roots.is_empty() { None } else { Some(&roots) };
         let (path, file_kind) = queue.find_pop_async(filter_kinds, filter_roots).await;
@@ -263,7 +265,7 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
                 // Gifs are transcoded to video.
                 Ok(playlist) => {
                     let playlist = Utf8PathBuf::from_path_buf(playlist).unwrap();
-                    break (playlist, FileKind::Video);
+                    break (playlist, Some(path), FileKind::Video);
                 }
                 Err(error) => {
                     println!("Failed to get playlist for {path}: {error}");
@@ -275,7 +277,7 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
         // The future isn't Send unless we spawn this, and axum was designed for tokio.
         let result = compio::runtime::spawn(future).await.unwrap();
         match result {
-            Ok(Ok(_)) => break (path, file_kind),
+            Ok(Ok(_)) => break (path, None, file_kind),
             Ok(Err(_)) => continue,
             Err(_) => {
                 // Timeout.
@@ -285,6 +287,8 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
         }
     };
 
+    let display_path = display_path.map(Utf8PathBuf::into_string);
+
     (
         [
             (CACHE_CONTROL, "no-cache, no-store, must-revalidate"),
@@ -292,7 +296,7 @@ async fn random_path_handler(query: Query<RandomQuery>) -> impl IntoResponse {
             (EXPIRES, "0"),
         ],
         queue_info(),
-        Json(PathResponse { path: path.into_string(), kind: file_kind }),
+        Json(PathResponse { path: path.into_string(), display_path, kind: file_kind }),
     )
 }
 
