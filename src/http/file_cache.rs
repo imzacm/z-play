@@ -208,6 +208,19 @@ impl CachedFile {
             listener.await;
         }
 
+        // Remove chunk state when future is cancelled to avoid deadlocks.
+        let _guard = scopeguard::guard((self, chunk_index), |(this, chunk_index)| {
+            let mut chunks = this.chunks.borrow_mut();
+            if !matches!(chunks.get(&chunk_index), Some(ChunkState::Loading(_))) {
+                return;
+            }
+
+            let Some(ChunkState::Loading(notify)) = chunks.remove(&chunk_index) else {
+                unreachable!()
+            };
+            notify.notify(usize::MAX);
+        });
+
         // Perform the actual I/O read
         let offset = chunk_index * Self::CHUNK_SIZE;
         let len = Self::CHUNK_SIZE.min(self.size.saturating_sub(offset)) as usize;

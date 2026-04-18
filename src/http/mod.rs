@@ -330,9 +330,7 @@ async fn shuffle_queue_handler() -> impl IntoResponse {
 async fn close_file(axum::extract::Path(path): axum::extract::Path<String>) -> impl IntoResponse {
     let path = Utf8Path::new("/").join(path);
     FILE_CACHE.close(&path);
-    _ = compio::runtime::spawn(async move { PLAYLISTS.get().unwrap().close(path.as_ref()).await })
-        .await
-        .unwrap();
+    PLAYLISTS.get().unwrap().close(path.as_ref());
     StatusCode::NO_CONTENT
 }
 
@@ -738,7 +736,7 @@ fn directory_counts() {
         let visit = |event: inotify::Event<'_>| {
             let is_delete_self = event.mask.contains(rustix::fs::inotify::ReadFlags::DELETE_SELF);
             let is_move_self = event.mask.contains(rustix::fs::inotify::ReadFlags::MOVE_SELF);
-            let path = if is_delete_self || is_move_self {
+            let path = if is_delete_self || is_move_self || event.name.is_none() {
                 event.dir.clone()
             } else {
                 let name = event.name.unwrap();

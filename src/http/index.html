@@ -823,7 +823,14 @@
                             // Try to keep 60 seconds buffered ahead
                             maxBufferLength: 60,
                             // Allow up to 10 minutes to sit in RAM if needed
-                            maxMaxBufferLength: 600
+                            maxMaxBufferLength: 600,
+
+                            // Tolerates larger timestamp gaps between transcoded segments
+                            maxBufferHole: 0.5,
+                            maxSeekHole: 2,
+
+                            // Prevents the player from stalling instantly on minor network jitter
+                            maxStarvationDelay: 5
                         })
                         hls.loadSource(src)
                         hls.attachMedia(active)

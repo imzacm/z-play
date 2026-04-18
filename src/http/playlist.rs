@@ -254,7 +254,7 @@ impl PlaylistManager {
         Ok(playlist_file)
     }
 
-    pub async fn close(&self, file_path: &Path) {
+    pub fn close(&self, file_path: &Path) {
         let mut playlist_to_close = None;
 
         if let Some(playlist) = self.playlists.borrow_mut().remove(file_path) {
@@ -267,16 +267,6 @@ impl PlaylistManager {
         {
             playlist_to_close = Some(playlist);
         }
-
-        let Some(mut playlist) = playlist_to_close else { return };
-        let playlist = loop {
-            match Rc::try_unwrap(playlist) {
-                Ok(playlist) => break playlist,
-                Err(value) => playlist = value,
-            }
-            compio::time::sleep(Duration::from_millis(10)).await;
-        };
-        playlist.close().await;
     }
 
     pub async fn contains_file(&self, path: &Path) -> bool {

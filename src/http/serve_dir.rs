@@ -35,10 +35,10 @@ pub async fn serve_dir(
         path = Utf8Path::from_path(mapped_path).unwrap().to_path_buf();
     };
 
-    let is_hls_playlist = path.file_name().is_some_and(|name| name.ends_with(".m3u8"));
+    let is_hls_file = mapped_path.is_some();
 
     let mut _guard = None;
-    if is_hls_playlist {
+    if is_hls_file {
         _guard = Some(scopeguard::guard(path.clone(), move |path| {
             FILE_CACHE.close(path);
         }));
@@ -141,8 +141,14 @@ pub async fn serve_dir(
 
         // Cache the rest of the file.
         while current_offset < file_size {
-            if file.read_at(current_offset, buffer_size).await.is_err() {
-                break;
+            match file.read_at(current_offset, buffer_size).await {
+                Ok(chunk) => {
+                    if chunk.is_empty() {
+                        break;
+                    }
+                    current_offset += chunk.len() as u64;
+                }
+                Err(_) => break,
             }
         }
     })
@@ -154,7 +160,7 @@ pub async fn serve_dir(
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CONNECTION, "keep-alive");
 
-    if is_hls_playlist {
+    if is_hls_file {
         response = response.header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate");
     } else {
         response = response.header(header::CACHE_CONTROL, "public, max-age=31536000");
